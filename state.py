@@ -214,8 +214,13 @@ class StateStore:
             if not existing and (action == "save" or action.startswith(("acquire:", "library:"))):
                 row = self.db.execute(
                     "SELECT * FROM sticker_operations WHERE account=? AND content_id=? "
-                    "AND action=? AND state IN ('pending','submitting','needs_review')",
-                    (account, content_id, action),
+                    "AND action IN (?,?) AND state IN ('pending','submitting','needs_review')",
+                    (
+                        account,
+                        content_id,
+                        action,
+                        "library:download" if action.startswith("library:download:") else action,
+                    ),
                 ).fetchone()
                 if row:
                     existing = dict(row)

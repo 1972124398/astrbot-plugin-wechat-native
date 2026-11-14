@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.17 — 2026-11-14
+
+- Replace the sticker help/list/download/status commands and `/stickers` alias with one administrator private-chat command: `/表情包同步`.
+- Automatically wait for account metadata sync, download every unready added official pack, skip ready packs and summarize successes, failures and unfinished tasks. One failed pack does not stop the rest.
+- Keep one sync workflow per adapter, poll each Native job for up to five minutes and preserve original jobs on timeout, uncertain admission or shutdown. Subsequent commands check in-flight receipts without reposting; legacy download intents remain protected.
+- Keep Native download errors visible, including upstream media-service HTTP 400 failures. Update SPEC v1.6, usage and configuration guidance together; existing find/send behavior is unchanged.
+
 ## 0.3.16 — 2026-11-14
 
 - Add opt-in Native v2.4.0/v2.4.1 quoted sticker previews through AstrBot's existing visual pipeline.
