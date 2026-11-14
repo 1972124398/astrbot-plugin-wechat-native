@@ -166,7 +166,78 @@ async def test_group_info_preserves_unknowns_and_rejects_private(serve, tmp_path
         await adapter.terminate()
 
 
-async def test_member_filter_is_local_to_one_native_page(serve, tmp_path):
+@pytest.mark.parametrize("query", ["  alice dev  ", "中文 &"])
+async def test_member_search_uses_native_search_on_every_page(serve, tmp_path, query):
+    adapter, event, _ = await tool_event(
+        serve,
+        tmp_path,
+        enable_history_tools=True,
+        group_reply_mode="all",
+        msg=message(threadId="room@chatroom"),
+    )
+    requests = []
+
+    async def handler(req):
+        requests.append((req.path, dict(req.query)))
+        if req.query.get("search") != query.strip():
+            return web.json_response(
+                {
+                    "items": [{"id": "u2", "username": "u2", "displayName": "Bob"}],
+                    "nextCursor": "unfiltered-next",
+                }
+            )
+        return web.json_response(
+            {
+                "items": [
+                    {
+                        "id": "u1",
+                        "username": "u1",
+                        "displayName": "备注",
+                        "roomDisplayName": "群昵称",
+                        "nickname": "Alice 中文",
+                        "alias": "dev&id",
+                        "mentionName": "群昵称",
+                        "version": "v1",
+                        "privateRemark": "secret",
+                    },
+                ],
+                "nextCursor": None if req.query.get("cursor") else "members-next",
+            }
+        )
+
+    adapter.client.api_url = await serve(handler)
+    try:
+        plugin = object.__new__(module("main").WeChatNativePlugin)
+        data = json.loads(await plugin.wechat_list_group_members(event, query))
+        assert data["ok"] and data["count"] == 1
+        assert data["items"][0]["id"] == "u1"
+        assert data["items"][0]["nickname"] == "Alice 中文"
+        assert data["items"][0]["alias"] == "dev&id"
+        assert data["coverage"] == "saved_members_may_be_partial"
+        assert data["hasMore"]
+        assert "secret" not in json.dumps(data)
+        assert requests == [
+            ("/accounts/a/groups/room@chatroom/members", {"limit": "20", "search": query.strip()})
+        ]
+        bad = json.loads(
+            await plugin.wechat_list_group_members(event, "other", cursor=data["nextCursor"])
+        )
+        assert bad["status"] == "invalid_cursor"
+        assert len(requests) == 1
+        second = json.loads(
+            await plugin.wechat_list_group_members(event, query, cursor=data["nextCursor"])
+        )
+        assert second["count"] == 1 and not second["hasMore"]
+        assert second["nextCursor"] is None
+        assert requests[-1] == (
+            "/accounts/a/groups/room@chatroom/members",
+            {"limit": "20", "cursor": "members-next", "search": query.strip()},
+        )
+    finally:
+        await adapter.terminate()
+
+
+async def test_member_list_without_search_accepts_older_member_fields(serve, tmp_path):
     adapter, event, _ = await tool_event(
         serve,
         tmp_path,
@@ -180,31 +251,23 @@ async def test_member_filter_is_local_to_one_native_page(serve, tmp_path):
         requests.append(dict(req.query))
         return web.json_response(
             {
-                "items": [
-                    {
-                        "id": "u1",
-                        "username": "u1",
-                        "displayName": "ALICE",
-                        "privateRemark": "secret",
-                    },
-                    {"id": "u2", "username": "u2", "displayName": "Bob"},
-                ],
-                "nextCursor": "members-next",
+                "items": [{"id": "u1", "username": "u1", "displayName": "Alice"}],
+                "nextCursor": None,
             }
         )
 
     adapter.client.api_url = await serve(handler)
     try:
         plugin = object.__new__(module("main").WeChatNativePlugin)
-        data = json.loads(await plugin.wechat_list_group_members(event, "alice"))
+        data = json.loads(await plugin.wechat_list_group_members(event, "  "))
         assert data["ok"] and data["count"] == 1
-        assert data["items"][0]["id"] == "u1"
-        assert data["coverage"] == "current_page_filter_may_be_partial"
-        assert data["hasMore"]
-        assert "secret" not in json.dumps(data)
+        assert data["items"][0]["nickname"] is None
+        assert data["items"][0]["alias"] is None
         assert requests == [{"limit": "20"}]
-        await plugin.wechat_list_group_members(event, "alice", cursor=data["nextCursor"])
-        assert requests[-1] == {"limit": "20", "cursor": "members-next"}
+        for query in (None, "中" * 86):
+            bad = json.loads(await plugin.wechat_list_group_members(event, query))
+            assert bad["status"] == "invalid_request"
+        assert len(requests) == 1
     finally:
         await adapter.terminate()
 

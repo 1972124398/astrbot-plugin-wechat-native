@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.18 — 2026-11-15
+
+- Adapt group-member queries to Native v2.4.2 search: forward `search` on every page instead of filtering only the fetched page, preserving matches across nickname, WeChat ID, remark and group nickname fields.
+- Include `nickname` and `alias` in member tool results, keeping missing fields null for older responses. Preserve cursor binding to the account, group, search and page size.
+- Update member-search and mention-tool guidance; verify search pagination, Chinese and special characters, changed-query cursor rejection and older response compatibility with targeted tests.
+
 ## 0.3.17 — 2026-11-14
 
 - Replace the sticker help/list/download/status commands and `/stickers` alias with one administrator private-chat command: `/表情包同步`.

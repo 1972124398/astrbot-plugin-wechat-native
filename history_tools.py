@@ -55,7 +55,9 @@ class HistoryTools:
         query = query.strip()
         binding = (ctx.account, ctx.thread, "list_group_members", query, limit)
         native, page = self.cursor(cursor, binding)
-        data = await self.adapter.client.group_members(ctx.thread, limit=limit, cursor=native)
+        data = await self.adapter.client.group_members(
+            ctx.thread, limit=limit, cursor=native, search=query
+        )
         if not isinstance(data.get("items"), list) or len(data["items"]) > limit:
             raise ToolError("not_available", "member_page_invalid")
         safe = []
@@ -72,14 +74,19 @@ class HistoryTools:
                 raise ToolError("not_available", "member_scope_mismatch")
             member = {
                 key: item[key][:800] if isinstance(item.get(key), str) else None
-                for key in ("id", "username", "displayName", "roomDisplayName", "mentionName")
+                for key in (
+                    "id",
+                    "username",
+                    "displayName",
+                    "roomDisplayName",
+                    "mentionName",
+                    "nickname",
+                    "alias",
+                )
             }
             if not member["id"] or not member["username"]:
                 raise ToolError("not_available", "member_identity_missing")
-            if not query or any(
-                query.casefold() in (value or "").casefold() for value in member.values()
-            ):
-                safe.append(member)
+            safe.append(member)
         next_cursor = self.next_cursor(data.get("nextCursor"), binding, page)
         return result(
             "list_group_members",
@@ -89,9 +96,7 @@ class HistoryTools:
             nextCursor=next_cursor,
             hasMore=data.get("nextCursor") is not None,
             truncated=bool(data.get("nextCursor") and not next_cursor),
-            coverage="current_page_filter_may_be_partial"
-            if query
-            else "saved_members_may_be_partial",
+            coverage="saved_members_may_be_partial",
             dataOnly=True,
         )
 

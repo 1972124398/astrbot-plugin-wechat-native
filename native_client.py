@@ -921,10 +921,12 @@ class NativeClient:
     async def group(self, thread: str):
         return await self._request("GET", self.prefix + "/groups/" + quote(thread, safe=""))
 
-    async def group_members(self, thread: str, *, limit: int, cursor: str = ""):
+    async def group_members(self, thread: str, *, limit: int, cursor: str = "", search: str = ""):
         params = {"limit": str(limit)}
         if cursor:
             params["cursor"] = cursor
+        if search:
+            params["search"] = search
         return await self._request(
             "GET", self.prefix + "/groups/" + quote(thread, safe="") + "/members", params=params
         )

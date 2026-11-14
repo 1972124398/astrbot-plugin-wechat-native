@@ -354,7 +354,7 @@ Loop Breaker 默认开启。每个账号、每个聊天独立统计：60 秒内�
 | `wechat_get_recent_messages` | “刚才聊了什么？”：当前聊天的 Native 本地记录 |
 | `wechat_search_messages` | “找一下 Docker”：当前聊天本地子串搜索 |
 | `wechat_get_group_info` | “群主是谁？”：未知资料保留未知 |
-| `wechat_list_group_members` | “看看群里有哪些人”：单页名单，名称筛选仅作用于该页 |
+| `wechat_list_group_members` | “查找群里的某个人”：由 Native 搜索当前群保存成员后分页，支持 ID、微信号、昵称、备注和群昵称；空查询列出一页成员 |
 | `wechat_mention_member` | “提醒潜水冠军看一下群消息”：在当前群真正 @对应成员并发送文本 |
 | `wechat_set_my_group_nickname` | “你以后叫摸鱼小助手”：允许交互的当前群成员可发起，每群 60 秒最多一次 |
 | `wechat_rename_group` | 管理员“把群名改成快乐摸鱼总部”：还需微信实际权限 |
