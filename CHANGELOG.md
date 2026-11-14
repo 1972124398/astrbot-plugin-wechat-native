@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.16 — 2026-11-14
+
+- Add opt-in Native v2.4.0/v2.4.1 quoted sticker previews through AstrBot's existing visual pipeline.
+- Prepare the sticker library in WeChat administrator private chat with `/表情包`: help, sync, paginated added-pack list, whole-pack download and retained-job status, using the Native HTTP API directly.
+- Persist library-operation keys and jobs in the existing journal with an additive in-flight unique index; concurrent commands and restart recovery reuse retained operations without resubmission. Pack membership is still added on the phone.
+- Remove `wechat_save_quoted_sticker` and silent group auto-save; quoted sticker previews remain available without importing them into Saved.
+- Store local sticker descriptions and `image/gif` readiness cache in SQLite `sticker_labels`, retaining bounded VLM preview labeling for unlabeled cached Saved items when `enable_media` is enabled.
+- Restrict `wechat_find_stickers` and `wechat_send_sticker` to locally ready `image/gif` Saved (`GET /custom-stickers/{id}`) and added-pack entries without calling `POST /sticker-downloads`.
+- Retain fixed idempotency keys, Job IDs and existing SQLite state, including read-only recovery of legacy save jobs; unknown outcomes block resubmission.
+- Keep stickers disabled by default. Back up persistent state before upgrade; see `docs/SPEC-WeChat Native Sticker Receive Save  Send.md` and `docs/verification-stickers-v2.4.0.md` for details.
+
+## 0.3.15 — 2026-11-14
+
+- Add opt-in Native v2.4.0/v2.4.1 quoted sticker previews through AstrBot's existing visual pipeline.
+- Add quoted sticker Saved import (`wechat_save_quoted_sticker` and silent group `auto_save`) with verified original-byte MD5 deduplication, SQLite concurrent claims and strict server/writeback receipts.
+- Store local sticker descriptions and `image/gif` readiness cache in SQLite `sticker_labels` (via `wechat_save_quoted_sticker(caption=...)` and VLM preview labeling when `enable_media` is enabled), without altering Native/WeChat payloads.
+- Restrict `wechat_find_stickers` and `wechat_send_sticker` to locally ready `image/gif` Saved (`GET /custom-stickers/{id}`) and added-pack entries without calling `POST /sticker-downloads`.
+- Retain fixed idempotency keys and Job IDs; restart recovery only reads original receipts, and unknown outcomes block resubmission.
+- Keep stickers disabled by default. Back up persistent state before upgrade; see `docs/SPEC-WeChat Native Sticker Receive Save  Send.md` and `docs/verification-stickers-v2.4.0.md` for details.
+
 ## 0.3.14 — 2026-11-13
 
 - Preserve connection status and offline reasons during automatic refresh and post-login checks to prevent panel flicker and layout jumps.

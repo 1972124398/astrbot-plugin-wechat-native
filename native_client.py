@@ -83,6 +83,21 @@ _SAFE_CODES = {
     "voice_duration_limit",
     "media_audio_invalid",
     "unsupported_voice_chunk",
+    "sticker_source_unavailable",
+    "sticker_source_not_allowed",
+    "sticker_source_dns_not_public",
+    "sticker_metadata_invalid",
+    "sticker_pack_not_added",
+    "custom_sticker_not_found",
+    "unsupported_sticker_send_format",
+    "sticker_send_rejected",
+    "media_queue_full",
+    "media_service_rejected",
+    "sticker_submission_needs_review",
+    "sticker_pack_not_eligible",
+    "sticker_pack_item_not_found",
+    "sticker_pack_acquisition_rejected",
+    "sticker_pack_detail_rejected",
 }
 
 MEDIA_ERROR_MESSAGES = {
@@ -121,6 +136,15 @@ VOICE_ERROR_MESSAGES = {
     "recent_unavailable": "未找到你在本群最近2分钟发送的语音，请重新发送或引用语音。",
 }
 
+STICKER_ERROR_MESSAGES = {
+    "unavailable": "引用的表情无法读取，请重新发送。",
+    "expired": "引用的表情已失效，请重新发送。",
+    "too_large": "表情太大，暂时无法处理。",
+    "missing_scope": "表情读取功能未正确配置，请联系管理员。",
+    "unsupported_format": "暂不支持这种表情格式。",
+    "recalled": "",
+}
+
 _VARIANT_RANK = {"original": 0, "standard": 1, "thumbnail": 2}
 _NON_TRANSFERABLE_STATES = {
     "available",
@@ -141,10 +165,12 @@ class NativeAPIError(Exception):
 
 class MediaError(Exception):
     def __init__(self, reason: str = "unavailable", *, media_kind: str = "image"):
-        self.media_kind = media_kind if media_kind in {"pdf", "voice"} else "image"
-        messages = {"pdf": PDF_ERROR_MESSAGES, "voice": VOICE_ERROR_MESSAGES}.get(
-            self.media_kind, MEDIA_ERROR_MESSAGES
-        )
+        self.media_kind = media_kind if media_kind in {"pdf", "voice", "sticker"} else "image"
+        messages = {
+            "pdf": PDF_ERROR_MESSAGES,
+            "voice": VOICE_ERROR_MESSAGES,
+            "sticker": STICKER_ERROR_MESSAGES,
+        }.get(self.media_kind, MEDIA_ERROR_MESSAGES)
         self.reason = reason if reason in messages else "unavailable"
         self.user_message = messages[self.reason]
         super().__init__(f"Native media error: {self.reason}")
@@ -783,14 +809,28 @@ class NativeClient:
     def _login_operation(self, value, operation_id=None):
         result = value.get("result")
         if (
-            not isinstance(value.get("id"), str) or not value["id"]
+            not isinstance(value.get("id"), str)
+            or not value["id"]
             or (operation_id is not None and value["id"] != operation_id)
-            or value.get("accountId") != self.account_id or value.get("kind") != "login"
+            or value.get("accountId") != self.account_id
+            or value.get("kind") != "login"
             or not isinstance(value.get("state"), str)
-            or value.get("state") not in {
-                "starting", "resuming", "authenticating",
-                "queued", "running", "awaiting_scan", "awaiting_approval", "succeeded",
-                "expired", "failed", "rejected", "cancelled", "needs_login", "needs_review",
+            or value.get("state")
+            not in {
+                "starting",
+                "resuming",
+                "authenticating",
+                "queued",
+                "running",
+                "awaiting_scan",
+                "awaiting_approval",
+                "succeeded",
+                "expired",
+                "failed",
+                "rejected",
+                "cancelled",
+                "needs_login",
+                "needs_review",
             }
             or not isinstance(value.get("createdAt"), str)
             or not isinstance(value.get("updatedAt"), str)
@@ -807,10 +847,15 @@ class NativeClient:
 
     async def start_login(self, key, *, force_qr=False):
         value = await self._request(
-            "POST", self.prefix + "/login-attempts", expected_status=202,
-            headers={"Idempotency-Key": key}, json={
+            "POST",
+            self.prefix + "/login-attempts",
+            expected_status=202,
+            headers={"Idempotency-Key": key},
+            json={
                 "strategy": "qr" if force_qr else "auto",
-                "allowQr": True, "forceQr": force_qr, "timeoutSeconds": 900,
+                "allowQr": True,
+                "forceQr": force_qr,
+                "timeoutSeconds": 900,
                 "qrRefresh": {"mode": "auto", "maxRefreshes": 3},
             },
         )
@@ -818,7 +863,8 @@ class NativeClient:
 
     async def login_status(self, operation_id):
         value = await self._request(
-            "GET", self.prefix + "/login-attempts/" + quote(operation_id, safe=""),
+            "GET",
+            self.prefix + "/login-attempts/" + quote(operation_id, safe=""),
             expected_status=200,
         )
         return self._login_operation(value, operation_id)
@@ -828,9 +874,13 @@ class NativeClient:
             raise NativeAPIError(502)
         try:
             async with self._session.get(
-                self.api_url + self.prefix + "/login-attempts/"
-                + quote(operation_id, safe="") + "/qr",
-                params={"generation": str(generation)}, allow_redirects=False,
+                self.api_url
+                + self.prefix
+                + "/login-attempts/"
+                + quote(operation_id, safe="")
+                + "/qr",
+                params={"generation": str(generation)},
+                allow_redirects=False,
             ) as response:
                 await self._raise_for_status(response)
                 if response.status != 200 or response.content_type != "image/png":
@@ -883,8 +933,10 @@ class NativeClient:
         return await self._request(
             "GET",
             self.prefix
-            + "/groups/" + quote(thread, safe="")
-            + "/members/" + quote(username, safe=""),
+            + "/groups/"
+            + quote(thread, safe="")
+            + "/members/"
+            + quote(username, safe=""),
         )
 
     async def set_my_group_name(self, thread: str, name: str, key: str):
@@ -926,8 +978,52 @@ class NativeClient:
             "GET", self.prefix + "/messages/" + quote(message_id, safe="") + "/media"
         )
 
+    async def sticker_assets(self, message_id: str, *, quoted: bool = True) -> list[dict]:
+        return await self._load_assets(message_id, "sticker", quoted=quoted)
+
+    async def sticker_content(self, asset: dict, *, original=False) -> bytes:
+        """Read only authenticated Native content, verifying its advertised identity."""
+        if asset.get("state") != "available":
+            reason = {
+                "expired": "expired",
+                "unsupported": "unsupported_format",
+                "recalled": "recalled",
+            }.get(asset.get("state"), "unavailable")
+            raise MediaError(reason)
+        preview = asset.get("preview")
+        use_preview = not original and isinstance(preview, dict)
+        if use_preview and preview.get("sourceSha256") != asset.get("sha256"):
+            raise MediaError("unavailable")
+        metadata = preview if use_preview else asset
+        if original and (
+            asset.get("variant") != "original"
+            or _effective_variant(asset) != "original"
+            or asset.get("contentType") == "image/x-wxgf"
+        ):
+            raise MediaError("unsupported_format")
+        size, sha = metadata.get("byteLength"), metadata.get("sha256")
+        if (
+            type(size) is not int
+            or size <= 0
+            or not isinstance(sha, str)
+            or not re.fullmatch(r"[0-9a-fA-F]{64}", sha)
+        ):
+            raise MediaError("unavailable")
+        if size > MAX_IMAGE_BYTES:
+            raise MediaError("too_large")
+        data, _ = await self.media_content(asset["id"], preview=use_preview)
+        if len(data) != size or hashlib.sha256(data).hexdigest() != sha.lower():
+            raise MediaError("unavailable")
+        validate_image_bytes(data)
+        return data
+
     async def transfer_media(
-        self, message_id: str, quality: str = "original", *, asset_id: str | None = None
+        self,
+        message_id: str,
+        quality: str = "original",
+        *,
+        asset_id: str | None = None,
+        key: str | None = None,
     ) -> dict:
         logger.debug(
             "WeChat Native 请求媒体传输：message=%s quality=%s asset=%s",
@@ -943,6 +1039,7 @@ class NativeClient:
                 "POST",
                 self.prefix + "/messages/" + quote(message_id, safe="") + "/media-transfers",
                 json=payload,
+                **({"headers": {"Idempotency-Key": key}} if key else {}),
             )
         except NativeAPIError as error:
             logger.warning(
@@ -955,6 +1052,50 @@ class NativeClient:
 
     async def job(self, job_id: str) -> dict:
         return await self._request("GET", self.prefix + "/jobs/" + quote(job_id, safe=""))
+
+    async def custom_stickers(self):
+        return await self._request("GET", self.prefix + "/custom-stickers")
+
+    async def custom_sticker(self, sticker_id):
+        return await self._request(
+            "GET", self.prefix + "/custom-stickers/" + quote(sticker_id, safe="")
+        )
+
+    async def sticker_packs(self):
+        return await self._request(
+            "GET", self.prefix + "/sticker-packs", params={"membership": "added"}
+        )
+
+    async def pack_stickers(self, pack_id):
+        return await self._request(
+            "GET", self.prefix + "/sticker-packs/" + quote(pack_id, safe="") + "/stickers"
+        )
+
+    async def download_sticker(self, pack_id, sticker_id, key):
+        return await self._request(
+            "POST",
+            self.prefix + "/sticker-downloads",
+            json={"packId": pack_id, "stickerId": sticker_id},
+            headers={"Idempotency-Key": key},
+        )
+
+    async def download_sticker_pack(self, pack_id, key):
+        return await self._request(
+            "POST",
+            self.prefix + "/sticker-downloads",
+            json={"packId": pack_id},
+            headers={"Idempotency-Key": key},
+            expected_status=202,
+        )
+
+    async def sync_stickers(self, key):
+        return await self._request(
+            "POST",
+            self.prefix + "/sticker-syncs",
+            json={"scope": "all"},
+            headers={"Idempotency-Key": key},
+            expected_status=202,
+        )
 
     async def media_content(
         self,
@@ -1002,8 +1143,15 @@ class NativeClient:
         self, message_id: str, kind: str, *, quoted: bool, guard=None
     ) -> list[dict]:
         _check_guard(guard)
-        media_label = {"file": "PDF", "voice": "语音", "image": "图片"}.get(kind, "媒体")
-        media_kind = "pdf" if kind == "file" else kind if kind in {"voice", "image"} else "image"
+        media_label = {
+            "file": "PDF",
+            "voice": "语音",
+            "image": "图片",
+            "sticker": "表情",
+        }.get(kind, "媒体")
+        media_kind = (
+            "pdf" if kind == "file" else kind if kind in {"voice", "image", "sticker"} else "image"
+        )
         logger.debug(
             "WeChat Native 查询%s资产：message=%s quoted=%s", media_label, message_id, quoted
         )
@@ -1669,6 +1817,147 @@ class NativeClient:
                 return await self.send_by_key(key)
             except NativeAPIError:
                 raise SendError("submission_unknown", key) from None
+
+    async def send_sticker(self, thread, source, key, *, record_job):
+        value = await self._submit_send(
+            {"kind": "sticker", "threadId": thread, "source": source}, key
+        )
+        return await self.sticker_send_receipt(thread, key, initial=value, record_job=record_job)
+
+    async def sticker_send_receipt(
+        self, thread, key, *, initial=None, job_id=None, record_job=None
+    ):
+        """Sticker jobs use available/accepted receipts, unlike image/voice jobs."""
+        value = initial
+        deadline = asyncio.get_running_loop().time() + self.send_timeout
+        try:
+            async with asyncio.timeout(self.send_timeout):
+                while True:
+                    if value is None:
+                        value = await self.job(job_id) if job_id else await self.send_by_key(key)
+                    if (
+                        not isinstance(value.get("id"), str)
+                        or not value["id"]
+                        or (job_id and value["id"] != job_id)
+                        or value.get("kind") != "sticker_send"
+                        or value.get("accountId") != self.account_id
+                        or value.get("threadId") != thread
+                    ):
+                        raise SendError("needs_review", key, job_id)
+                    job_id = value["id"]
+                    if record_job:
+                        record_job(job_id)
+                    payload = value.get("result")
+                    payload = payload if isinstance(payload, dict) else {}
+                    top_server_id = value.get("serverMessageId")
+                    nested_server_id = payload.get("serverMessageId")
+                    server_id = top_server_id if top_server_id is not None else nested_server_id
+                    if (
+                        value.get("state") == "available"
+                        and payload.get("serverAcceptance") == "accepted"
+                        and isinstance(server_id, str)
+                        and server_id.strip()
+                        and len(server_id) <= 128
+                        and (top_server_id is None or nested_server_id in {None, top_server_id})
+                    ):
+                        return {**value, "serverMessageId": server_id}
+                    raw_state = value.get("state")
+                    raw_phase = value.get("phase")
+                    raw_acceptance = payload.get("serverAcceptance")
+                    raw_reason = value.get("reason")
+                    safe_state = (
+                        raw_state
+                        if raw_state
+                        in {
+                            "queued",
+                            "running",
+                            "available",
+                            "needs_review",
+                            "failed",
+                            "cancelled",
+                            "expired",
+                            "unsupported",
+                        }
+                        else "unknown"
+                    )
+                    safe_phase = (
+                        raw_phase
+                        if raw_phase
+                        in {
+                            "queued",
+                            "preparing",
+                            "downloading",
+                            "reserving",
+                            "uploading",
+                            "submitting",
+                            "readback",
+                            "projecting",
+                            "completed",
+                        }
+                        else "unknown"
+                    )
+                    safe_acceptance = (
+                        raw_acceptance
+                        if raw_acceptance
+                        in {"pending", "accepted", "uncertain", "not_attempted", "rejected"}
+                        else "unknown"
+                    )
+                    safe_reason = (
+                        raw_reason
+                        if isinstance(raw_reason, str) and raw_reason in _SAFE_CODES
+                        else ("none" if raw_reason is None else "unknown")
+                    )
+                    if value.get("state") in {"failed", "cancelled"} and payload.get(
+                        "serverAcceptance"
+                    ) in {"not_attempted", "rejected"}:
+                        logger.warning(
+                            "WeChat Native 表情发送回执失败：receipt_key=%s job_id=%s state=%s "
+                            "phase=%s acceptance=%s reason=%s",
+                            key,
+                            job_id,
+                            safe_state,
+                            safe_phase,
+                            safe_acceptance,
+                            safe_reason,
+                        )
+                        raise SendError("failed", key, job_id)
+                    if value.get("state") not in {"queued", "running"}:
+                        logger.warning(
+                            "WeChat Native 表情发送回执待核对：receipt_key=%s job_id=%s state=%s "
+                            "phase=%s acceptance=%s reason=%s has_server_id=%s",
+                            key,
+                            job_id,
+                            safe_state,
+                            safe_phase,
+                            safe_acceptance,
+                            safe_reason,
+                            isinstance(server_id, str) and bool(server_id.strip()),
+                        )
+                        raise SendError("needs_review", key, job_id)
+                    if asyncio.get_running_loop().time() >= deadline:
+                        logger.warning(
+                            "WeChat Native 表情发送回执轮询超时：receipt_key=%s job_id=%s state=%s "
+                            "phase=%s acceptance=%s",
+                            key,
+                            job_id,
+                            safe_state,
+                            safe_phase,
+                            safe_acceptance,
+                        )
+                        raise SendError("needs_review", key, job_id)
+                    await asyncio.sleep(self.poll_interval)
+                    value = None
+        except (NativeAPIError, TimeoutError) as error:
+            logger.warning(
+                "WeChat Native 表情发送回执查询异常：receipt_key=%s job_id=%s error_type=%s "
+                "http=%s code=%s",
+                key,
+                job_id,
+                type(error).__name__,
+                error.status if isinstance(error, NativeAPIError) else None,
+                error.code if isinstance(error, NativeAPIError) else "none",
+            )
+            raise SendError("needs_review", key, job_id) from None
 
     async def send_image(
         self,
