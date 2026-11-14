@@ -55,7 +55,10 @@ CONFIG_METADATA = {
     "enable_stickers": {
         "type": "bool",
         "description": "启用原生表情读取、查找与发送",
-        "hint": "先在微信添加表情包，管理员私聊 /表情包 同步、列表、下载；视觉识别使用媒体开关。",
+        "hint": (
+            "先在微信添加表情包，管理员私聊 /表情包同步，自动同步并下载所有已添加包；"
+            "视觉识别使用媒体开关。"
+        ),
     },
     "enable_wechat_actions": {
         "type": "bool",

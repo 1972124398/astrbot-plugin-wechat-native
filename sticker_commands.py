@@ -1,4 +1,4 @@
-"""Administrator private-chat commands for preparing the Native sticker library."""
+"""One administrator private-chat command to sync and download added sticker packs."""
 
 import asyncio
 
@@ -8,14 +8,8 @@ from .native_client import NativeAPIError, NativeClient
 from .state import clean_sticker_caption
 from .tool_support import context, is_native_event, is_tool_error, result
 
-HELP = (
-    "表情包管理（管理员私聊）\n"
-    "/表情包 同步：同步账号的收藏和已添加包目录\n"
-    "/表情包 列表 [页码]：查看已添加包及 ID\n"
-    "/表情包 下载 PACK_ID：下载一个已添加包到 Native 缓存\n"
-    "/表情包 状态 JOB_ID：查看已提交任务\n"
-    "先在手机微信添加表情包，再同步、查看列表并下载。"
-)
+JOB_WAIT_SECONDS = 300
+POLL_INTERVAL_SECONDS = 2
 
 
 def valid_id(value):
@@ -30,11 +24,13 @@ async def added_packs(adapter):
     page = await adapter.client.sticker_packs()
     if not isinstance(page, dict) or not isinstance(page.get("items"), list):
         raise ValueError("invalid_sticker_pack_list")
-    return [
-        p
-        for p in page["items"]
-        if isinstance(p, dict) and p.get("membership") == "added" and valid_id(p.get("id"))
-    ]
+    return list(
+        {
+            p["id"]: p
+            for p in page["items"]
+            if isinstance(p, dict) and p.get("membership") == "added" and valid_id(p.get("id"))
+        }.values()
+    )
 
 
 async def inspect_library_operation(adapter, row, job=None):
@@ -69,7 +65,7 @@ async def inspect_library_operation(adapter, row, job=None):
                 payload.get("serverAcceptance") in {"accepted", "reconciled_noop"}
                 and payload.get("profileWriteback") == "complete"
             )
-            if action == "library:download":
+            if action.startswith("library:download"):
                 complete = complete and (
                     payload.get("packId") == row["content_id"]
                     and payload.get("membership") == "added"
@@ -88,90 +84,40 @@ async def inspect_library_operation(adapter, row, job=None):
 def operation_text(outcome):
     label = "同步" if outcome["action"] == "library:sync" else "下载"
     text = {
-        "success": f"{label}完成。可在聊天中请求查找并发送本地可用的 GIF 表情。",
         "pending": f"{label}任务仍在处理中，尚未完成。",
         "failed": f"{label}任务失败，请检查 Native 任务与连接状态。",
         "needs_review": f"{label}结果待核对，请勿重复提交或更换任务重试。",
     }[outcome["status"]]
     job_id = outcome.get("job_id")
     if job_id:
-        text += f"\n任务：{job_id}\n查询：/表情包 状态 {job_id}"
-    return text
+        text += f"\n任务：{job_id}"
+    return text + "\n稍后可再次发送 /表情包同步，插件会核对原在途任务。"
 
 
-async def run_sticker_command(event, action="帮助", target=""):
-    adapter, task = None, asyncio.current_task()
-    try:
-        if (
-            not is_native_event(event)
-            or event.is_admin() is not True
-            or event.is_private_chat() is not True
-        ):
-            return "此指令仅允许管理员通过 WeChat Native 私聊操作。"
-        if not event.adapter.native_config.enable_stickers:
-            return "请先在机器人配置中开启 enable_stickers。"
-        ctx = context(event, stickers=True)
-        adapter = ctx.adapter
-        adapter._send_tasks.add(task)
-        if action in {"帮助", "help", ""}:
-            return HELP
-        if not isinstance(target, str):
-            return HELP
-        if action == "列表":
-            if target and (not target.isascii() or not target.isdecimal() or len(target) > 4):
-                return "页码应为正整数。"
-            number = int(target or "1")
-            packs = await added_packs(adapter)
-            context(event, stickers=True)
-            if not packs:
-                return "当前没有已添加的表情包，请先在手机微信添加，再执行 /表情包 同步。"
-            pages = (len(packs) + 9) // 10
-            if not 1 <= number <= pages:
-                return f"页码应在 1–{pages} 之间。"
-            rows = []
-            readiness = {"available": "已下载", "partial": "部分就绪", "unavailable": "未下载"}
-            for pack in packs[(number - 1) * 10 : number * 10]:
-                name = clean_sticker_caption(pack.get("name"))[:50] or "未命名"
-                state = readiness.get(pack.get("contentReadiness"), "未下载或未就绪")
-                rows.append(f"{name} · {state}\nID：{pack['id']}")
-            return "\n\n".join(rows) + f"\n第 {number}/{pages} 页。下载：/表情包 下载 PACK_ID"
-        if action == "状态":
-            if not valid_id(target):
-                return "用法：/表情包 状态 JOB_ID"
-            row = adapter.state.sticker_operation_by_job(ctx.account, target)
-            if row is None or not row["action"].startswith("library:"):
-                return "找不到当前账号通过本插件提交的表情库任务。"
-            return operation_text(await inspect_library_operation(adapter, row))
-        if action not in {"下载", "同步"}:
-            return HELP
-        if action == "同步" and target:
-            return "用法：/表情包 同步"
-        if action == "下载":
-            if not valid_id(target):
-                return "用法：/表情包 下载 PACK_ID"
-            packs = await added_packs(adapter)
-            if not any(p["id"] == target for p in packs):
-                return "该包尚未添加到当前微信账号，请先在手机添加，再同步目录。"
-        context(event, stickers=True)
-        downloading = action == "下载"
-        source = {"packId": target} if downloading else {"scope": "all"}
-        row, won = adapter.stickers.claim(
-            event.message_obj.raw_message,
-            "library:download" if downloading else "library:sync",
-            target if downloading else "all",
-            source,
-        )
-        if not won:
-            return operation_text(await inspect_library_operation(adapter, row))
+def management_context(event):
+    if event.is_admin() is not True or event.is_private_chat() is not True:
+        raise ValueError("sticker_management_permission_revoked")
+    return context(event, stickers=True)
+
+
+async def library_operation(event, pack_id=""):
+    adapter = management_context(event).adapter
+    action = "library:download:" + pack_id if pack_id else "library:sync"
+    source = {"packId": pack_id} if pack_id else {"scope": "all"}
+    row, won = adapter.stickers.claim(
+        event.message_obj.raw_message, action, pack_id or "all", source
+    )
+    if won:
         try:
-            if downloading:
-                job = await NativeClient.download_sticker_pack(
-                    adapter.client, target, row["idempotency_key"]
+            job = (
+                await NativeClient.download_sticker_pack(
+                    adapter.client, pack_id, row["idempotency_key"]
                 )
-            else:
-                job = await NativeClient.sync_stickers(adapter.client, row["idempotency_key"])
+                if pack_id
+                else await NativeClient.sync_stickers(adapter.client, row["idempotency_key"])
+            )
             outcome = await inspect_library_operation(adapter, row, job)
-        except BaseException as error:
+        except (Exception, asyncio.CancelledError) as error:
             state = (
                 "failed"
                 if isinstance(error, NativeAPIError)
@@ -183,12 +129,92 @@ async def run_sticker_command(event, action="帮助", target=""):
             if isinstance(error, asyncio.CancelledError):
                 raise
             outcome = result(row["action"], state, job_id=row["job_id"])
+    else:
+        outcome = await inspect_library_operation(adapter, row)
+    try:
+        async with asyncio.timeout(JOB_WAIT_SECONDS):
+            while outcome["status"] == "pending" and outcome.get("job_id"):
+                await asyncio.sleep(POLL_INTERVAL_SECONDS)
+                management_context(event)
+                row = dict(row, state="pending", job_id=outcome["job_id"])
+                outcome = await inspect_library_operation(adapter, row)
+    except TimeoutError:
+        pass
+    management_context(event)
+    return outcome
+
+
+async def sync_library(event):
+    adapter = management_context(event).adapter
+    outcome = await library_operation(event)
+    if outcome["status"] != "success":
         return operation_text(outcome)
+    packs = await added_packs(adapter)
+    management_context(event)
+    if not packs:
+        return (
+            "表情库目录同步完成，当前没有已添加的官方包。请先在手机微信添加，再发送 /表情包同步。"
+        )
+    counts = {"success": 0, "ready": 0, "failed": 0, "unfinished": 0}
+    issues = []
+    for pack in packs:
+        management_context(event)
+        if pack.get("contentReadiness") == "available":
+            counts["ready"] += 1
+            continue
+        outcome = await library_operation(event, pack["id"])
+        status = outcome["status"]
+        counts[status if status in {"success", "failed"} else "unfinished"] += 1
+        if status != "success":
+            label = {"failed": "失败", "pending": "处理中", "needs_review": "待核对"}[status]
+            name = clean_sticker_caption(pack.get("name"))[:50] or "未命名"
+            job = f" · 任务 {outcome['job_id']}" if outcome.get("job_id") else ""
+            issues.append(f"{name}（{pack['id']}）：{label}{job}")
+    complete = not counts["failed"] and not counts["unfinished"]
+    text = "表情包同步完成。" if complete else "表情包同步结束，部分包未完成。"
+    text += (
+        f"\n共 {len(packs)} 个包：下载成功 {counts['success']}，已就绪 {counts['ready']}，"
+        f"失败 {counts['failed']}，未完成 {counts['unfinished']}。"
+    )
+    if issues:
+        text += "\n" + "\n".join(issues[:10])
+        if len(issues) > 10:
+            text += f"\n另有 {len(issues) - 10} 个异常包。"
+        text += "\n稍后可再次发送 /表情包同步；已就绪的包会跳过，在途任务只核对原回执。"
+    else:
+        text += "\n现在可以在聊天中请求查找并发送本地可用的 GIF 表情。"
+    return text
+
+
+async def run_sticker_command(event, *, notify=None):
+    adapter, task, started = None, asyncio.current_task(), False
+    try:
+        if (
+            not is_native_event(event)
+            or event.is_admin() is not True
+            or event.is_private_chat() is not True
+        ):
+            return "此指令仅允许管理员通过 WeChat Native 私聊操作。"
+        if not event.adapter.native_config.enable_stickers:
+            return "请先在机器人配置中开启 enable_stickers。"
+        adapter = management_context(event).adapter
+        if getattr(adapter, "_sticker_sync_running", False):
+            return "表情包正在同步，完成后会自动汇总结果，无需重复发送。"
+        adapter._sticker_sync_running = started = True
+        adapter._send_tasks.add(task)
+        if notify is not None:
+            try:
+                await notify("开始同步表情库并自动下载所有已添加的包，完成后会汇总结果，请稍候。")
+            finally:
+                # Sending the acknowledgement releases the adapter's nested send task.
+                adapter._send_tasks.add(task)
+        return await sync_library(event)
     except Exception as error:
         if is_tool_error(error):
             return "当前暂时无法管理表情库，请检查机器人开关、私聊权限和连接状态。"
         logger.warning("WeChat Native 表情管理指令失败：error_type=%s", type(error).__name__)
         return "表情库操作暂时无法完成，请检查 Native 连接和任务状态。"
     finally:
-        if adapter is not None:
+        if started:
+            adapter._sticker_sync_running = False
             adapter._send_tasks.discard(task)

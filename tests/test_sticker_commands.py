@@ -12,50 +12,61 @@ from test_stickers import deliver, find, send_event, send_sticker
 class LibraryAPI:
     def __init__(self, native):
         self.native = native
-        self.state = "available"
-        self.fault = {}
-        self.status = 202
-        self.kind = "sticker_acquire"
+        self.jobs = {}
+        self.states = {}
+        self.faults = {}
+        self.sync_finished = False
+        self.sync_immediate = False
+        self.submitted = asyncio.Event()
 
-    def job(self):
-        original = dict(self.native.asset, id="pack-original", messageId=None)
-        payload = {"serverAcceptance": "reconciled_noop", "profileWriteback": "complete"}
-        if self.kind == "sticker_acquire":
-            payload.update(
-                packId="pack1",
-                serverAcceptance="accepted",
-                membership="added",
-                contentReadiness="available",
-                items=[original],
-            )
-            if self.state == "available":
-                self.native.pack_items[0]["original"] = original
+    def receipt(self, ident, *, initial=False):
+        pack_id = self.jobs[ident]
+        if not pack_id and self.sync_immediate:
+            initial = False
+        state = "running" if initial else self.states.get(pack_id, "available")
+        payload = {"serverAcceptance": "accepted", "profileWriteback": "complete"}
+        if pack_id:
+            payload.update(packId=pack_id, membership="added", contentReadiness="available")
+        if state == "available" and not initial and pack_id not in self.faults:
+            if pack_id:
+                for pack in self.native.packs:
+                    if pack["id"] == pack_id:
+                        pack["contentReadiness"] = "available"
+                self.native.pack_items[0]["original"] = dict(
+                    self.native.asset, id="pack-original", messageId=None
+                )
+            else:
+                self.sync_finished = True
         return {
-            "id": "library-job",
+            "id": ident,
             "accountId": "a",
-            "kind": self.kind,
-            "state": self.state,
-            "phase": "completed" if self.state == "available" else "downloading",
+            "kind": "sticker_acquire" if pack_id else "sticker_pack",
+            "state": state,
+            "phase": "completed" if state == "available" else "downloading",
             "result": payload,
-            **self.fault,
+            **self.faults.get(pack_id, {}),
         }
 
     async def handle(self, req):
         if req.method == "POST" and req.path.endswith(("/sticker-downloads", "/sticker-syncs")):
+            body = await req.json()
             self.native.calls.append(
-                (req.method, req.path, await req.json(), req.headers.get("Idempotency-Key"))
+                (req.method, req.path, body, req.headers.get("Idempotency-Key"))
             )
-            self.kind = "sticker_pack" if req.path.endswith("/sticker-syncs") else "sticker_acquire"
-            if self.status != 202:
-                return web.json_response({"error": {"code": "request_failed"}}, status=self.status)
-            return web.json_response(self.job(), status=202)
-        if req.path.endswith("/jobs/library-job"):
+            pack_id = body.get("packId", "")
+            if pack_id:
+                assert self.sync_finished
+            ident = "download-" + pack_id if pack_id else "sync-job"
+            self.jobs[ident] = pack_id
+            self.submitted.set()
+            return web.json_response(self.receipt(ident, initial=True), status=202)
+        if "/jobs/" in req.path:
             self.native.calls.append((req.method, req.path, None, None))
-            return web.json_response(self.job())
+            return web.json_response(self.receipt(req.path.rsplit("/", 1)[-1]))
         return await self.native.handle(req)
 
 
-async def setup(serve, tmp_path):
+async def setup(serve, tmp_path, monkeypatch):
     native, adapter, event = await send_event(serve, tmp_path)
     event.role = "admin"
     native.packs[0]["contentReadiness"] = "unavailable"
@@ -63,11 +74,12 @@ async def setup(serve, tmp_path):
     api = LibraryAPI(native)
     adapter.client.api_url = await serve(api.handle)
     native.calls.clear()
+    monkeypatch.setattr(module("sticker_commands"), "POLL_INTERVAL_SECONDS", 0.001, raising=False)
     return native, adapter, event, api
 
 
-async def command(event, action="帮助", target=""):
-    return await module("sticker_commands").run_sticker_command(event, action, target)
+async def command(event):
+    return await module("sticker_commands").run_sticker_command(event)
 
 
 async def next_event(native, adapter, ident="m2"):
@@ -77,12 +89,12 @@ async def next_event(native, adapter, ident="m2"):
     return event
 
 
-async def test_private_command_help_is_registered_and_stops_model_dispatch(
+async def test_only_sync_command_is_registered_and_sends_start_then_summary(
     serve, tmp_path, monkeypatch
 ):
     from astrbot.core.star import command_management
 
-    native, adapter, event, _ = await setup(serve, tmp_path)
+    native, adapter, event, _ = await setup(serve, tmp_path, monkeypatch)
     try:
         plugin = object.__new__(module("main").WeChatNativePlugin)
 
@@ -95,18 +107,20 @@ async def test_private_command_help_is_registered_and_stops_model_dispatch(
             for c in await command_management.list_commands()
             if c["module_path"] == "wechat_plugin.main"
         }
-        assert "stickers" in registered["表情包"]["aliases"]
+        assert "表情包同步" in registered
+        assert "表情包" not in registered
         replies = [r async for r in plugin.sticker_library(event)]
-        assert "表情包 下载" in replies[0].get_plain_text()
+        assert "下载成功 1" in replies[-1].get_plain_text()
+        texts = [c[2].get("text", "") for c in native.calls if c[0] == "POST" and c[2]]
+        assert any("开始" in t and "自动" in t for t in texts)
         assert event.is_stopped()
-        assert not native.calls
     finally:
         await adapter.terminate()
 
 
 @pytest.mark.parametrize("source", ["member", "group", "foreign", "disabled", "unowned"])
-async def test_management_rejects_unauthorized_events_before_http(serve, tmp_path, source):
-    native, adapter, event, _ = await setup(serve, tmp_path)
+async def test_sync_rejects_unauthorized_events_before_http(serve, tmp_path, monkeypatch, source):
+    native, adapter, event, _ = await setup(serve, tmp_path, monkeypatch)
     if source == "member":
         event.role = "member"
     elif source == "group":
@@ -122,79 +136,82 @@ async def test_management_rejects_unauthorized_events_before_http(serve, tmp_pat
         adapter._events.clear()
     native.calls.clear()
     try:
-        text = await command(event, "同步")
+        text = await command(event)
         assert "无法" in text or "仅允许" in text or "开启" in text
         assert not native.calls
     finally:
         await adapter.terminate()
 
 
-async def test_list_is_read_only_and_reports_added_pack_id_and_readiness(serve, tmp_path):
-    native, adapter, event, _ = await setup(serve, tmp_path)
+async def test_sync_waits_for_jobs_and_enables_existing_find_and_send(serve, tmp_path, monkeypatch):
+    native, adapter, event, _ = await setup(serve, tmp_path, monkeypatch)
     try:
-        text = await command(event, "列表")
-        assert "pack1" in text and "小猫" in text and "未下载" in text
-        assert not any(c[0] == "POST" for c in native.calls)
-    finally:
-        await adapter.terminate()
-
-
-async def test_sync_uses_account_api_and_retains_receipt(serve, tmp_path):
-    native, adapter, event, _ = await setup(serve, tmp_path)
-    try:
-        text = await command(event, "同步")
-        assert "同步完成" in text and "library-job" in text
+        text = await command(event)
+        assert "同步完成" in text and "下载成功 1" in text
         posts = [c for c in native.calls if c[0] == "POST"]
-        assert len(posts) == 1 and posts[0][1].endswith("/accounts/a/sticker-syncs")
-        assert posts[0][2] == {"scope": "all"} and posts[0][3]
-        await command(event, "同步")
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-    finally:
-        await adapter.terminate()
-
-
-async def test_whole_pack_download_enables_existing_find_and_native_send(serve, tmp_path):
-    native, adapter, event, _ = await setup(serve, tmp_path)
-    try:
-        text = await command(event, "下载", "pack1")
-        assert "下载完成" in text and "library-job" in text
-        posts = [c for c in native.calls if c[0] == "POST"]
-        assert len(posts) == 1 and posts[0][2] == {"packId": "pack1"} and posts[0][3]
+        assert [c[2] for c in posts] == [{"scope": "all"}, {"packId": "pack1"}]
+        assert posts[0][1].endswith("/accounts/a/sticker-syncs")
+        assert len({c[3] for c in posts}) == 2
+        assert adapter.state.sticker_operation_by_job("a", "sync-job")["state"] == "success"
+        assert adapter.state.sticker_operation_by_job("a", "download-pack1")["state"] == "success"
+        await command(event)
+        assert len([c for c in native.calls if c[0] == "POST"]) == 2
         chat = await next_event(native, adapter)
         choice = (await find(chat, "晚安"))["items"][0]
         assert choice["source"] == "pack"
         assert (await send_sticker(chat, choice["selection_id"]))["status"] == "success"
-        assert not any(c[1].endswith("/custom-stickers") and c[0] == "POST" for c in native.calls)
     finally:
         await adapter.terminate()
 
 
-@pytest.mark.parametrize("target", ["", "not-added", "bad\npack", "x" * 1025])
-async def test_download_rejects_invalid_or_unadded_pack_without_post(serve, tmp_path, target):
-    native, adapter, event, _ = await setup(serve, tmp_path)
+async def test_sync_downloads_all_unready_added_packs_and_continues_after_failure(
+    serve, tmp_path, monkeypatch
+):
+    native, adapter, event, api = await setup(serve, tmp_path, monkeypatch)
+    native.packs += [
+        {"id": "ready", "name": "已就绪", "membership": "added", "contentReadiness": "available"},
+        {"id": "broken", "name": "失败包", "membership": "added"},
+        {"id": "last", "name": "最后一包", "membership": "added", "contentReadiness": "partial"},
+        {"id": "unadded", "membership": "not_added"},
+    ]
+    api.states["broken"] = "failed"
     try:
-        text = await command(event, "下载", target)
-        assert "下载完成" not in text
-        assert not any(c[0] == "POST" for c in native.calls)
+        text = await command(event)
+        assert "下载成功 2" in text and "已就绪 1" in text and "失败 1" in text
+        assert "broken" in text and "download-broken" in text
+        assert "全部完成" not in text
+        posts = [c for c in native.calls if c[0] == "POST"]
+        assert [c[2] for c in posts] == [
+            {"scope": "all"},
+            {"packId": "pack1"},
+            {"packId": "broken"},
+            {"packId": "last"},
+        ]
+        assert len({c[3] for c in posts}) == 4
     finally:
         await adapter.terminate()
 
 
-async def test_running_download_status_and_concurrent_commands_only_submit_once(serve, tmp_path):
-    native, adapter, event, api = await setup(serve, tmp_path)
-    api.state = "running"
-    other = await next_event(native, adapter)
+async def test_sync_failure_never_starts_downloads(serve, tmp_path, monkeypatch):
+    native, adapter, event, api = await setup(serve, tmp_path, monkeypatch)
+    api.states[""] = "failed"
     try:
-        texts = await asyncio.gather(
-            command(event, "下载", "pack1"), command(other, "下载", "pack1")
-        )
-        assert all("处理中" in t for t in texts)
-        assert any("library-job" in t for t in texts)
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-        assert "处理中" in await command(other, "状态", "library-job")
-        api.state = "available"
-        assert "下载完成" in await command(other, "状态", "library-job")
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
+        assert "同步任务失败" in await command(event)
+        assert [c[2] for c in native.calls if c[0] == "POST"] == [{"scope": "all"}]
+    finally:
+        await adapter.terminate()
+
+
+async def test_sync_reports_unfinished_download_without_resubmitting(serve, tmp_path, monkeypatch):
+    native, adapter, event, api = await setup(serve, tmp_path, monkeypatch)
+    api.sync_immediate = True
+    monkeypatch.setattr(module("sticker_commands"), "JOB_WAIT_SECONDS", 0, raising=False)
+    api.states["pack1"] = "running"
+    try:
+        text = await command(event)
+        assert "未完成 1" in text and "download-pack1" in text and "全部完成" not in text
+        await command(await next_event(native, adapter))
+        assert len([c for c in native.calls if c[0] == "POST" and c[2].get("packId")]) == 1
     finally:
         await adapter.terminate()
 
@@ -203,9 +220,15 @@ async def test_running_download_status_and_concurrent_commands_only_submit_once(
     "fault",
     [
         {"accountId": "foreign"},
-        {"id": ""},
+        {"id": "foreign-job"},
         {"kind": "sticker_send"},
-        {"result": {"packId": "other", "serverAcceptance": "accepted"}},
+        {
+            "result": {
+                "packId": "other",
+                "serverAcceptance": "accepted",
+                "profileWriteback": "complete",
+            }
+        },
         {
             "result": {
                 "packId": "pack1",
@@ -215,23 +238,37 @@ async def test_running_download_status_and_concurrent_commands_only_submit_once(
         },
     ],
 )
-async def test_unverified_download_receipt_never_reports_success_or_reposts(serve, tmp_path, fault):
-    native, adapter, event, api = await setup(serve, tmp_path)
-    api.fault = fault
+async def test_unverified_receipt_never_reports_success_or_reposts(
+    serve, tmp_path, monkeypatch, fault
+):
+    native, adapter, event, api = await setup(serve, tmp_path, monkeypatch)
+    api.faults["pack1"] = fault
     try:
-        assert "待核对" in await command(event, "下载", "pack1")
-        later = await next_event(native, adapter)
-        assert "待核对" in await command(later, "下载", "pack1")
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
+        assert "待核对" in await command(event)
+        assert "待核对" in await command(await next_event(native, adapter))
+        assert len([c for c in native.calls if c[0] == "POST" and c[2].get("packId")]) == 1
     finally:
         await adapter.terminate()
 
 
-async def test_unknown_admission_is_not_reposted_after_restart(serve, tmp_path):
-    native, adapter, event, api = await setup(serve, tmp_path)
-    api.status = 503
+async def test_sync_honors_legacy_unknown_download_without_post(serve, tmp_path, monkeypatch):
+    native, adapter, event, _ = await setup(serve, tmp_path, monkeypatch)
+    row, _ = adapter.stickers.claim(native.raw, "library:download", "pack1", {"packId": "pack1"})
+    adapter.state.finish_sticker(row["idempotency_key"], "needs_review")
     try:
-        assert "待核对" in await command(event, "下载", "pack1")
+        text = await command(await next_event(native, adapter))
+        assert "未完成 1" in text and "待核对" in text
+        assert [c[2] for c in native.calls if c[0] == "POST"] == [{"scope": "all"}]
+    finally:
+        await adapter.terminate()
+
+
+async def test_legacy_download_recovers_after_restart_without_post(serve, tmp_path, monkeypatch):
+    native, adapter, event, api = await setup(serve, tmp_path, monkeypatch)
+    row, _ = adapter.stickers.claim(native.raw, "library:download", "pack1", {"packId": "pack1"})
+    adapter.state.finish_sticker(row["idempotency_key"], "pending", "download-pack1")
+    api.jobs["download-pack1"] = "pack1"
+    try:
         config, api_url = dict(adapter.config), adapter.client.api_url
         await adapter.terminate()
         adapter = module("adapter").WeChatNativeAdapter(
@@ -241,97 +278,140 @@ async def test_unknown_admission_is_not_reposted_after_restart(serve, tmp_path):
         await adapter.client.open()
         adapter.client.api_url = api_url
         await adapter.stickers.recover()
-        later = await next_event(native, adapter)
-        assert "待核对" in await command(later, "下载", "pack1")
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
+        assert adapter.state.sticker_operation_by_job("a", "download-pack1")["state"] == "success"
+        assert not any(c[0] == "POST" for c in native.calls)
     finally:
         await adapter.terminate()
 
 
-async def test_status_cannot_read_unretained_job(serve, tmp_path):
-    native, adapter, event, _ = await setup(serve, tmp_path)
+async def test_concurrent_sync_gets_one_pipeline_and_cancellation_stops_downloads(
+    serve, tmp_path, monkeypatch
+):
+    native, adapter, event, api = await setup(serve, tmp_path, monkeypatch)
+    api.states[""] = "running"
+    task = asyncio.create_task(command(event))
     try:
-        assert "找不到" in await command(event, "状态", "foreign-job")
-        assert not native.calls
+        await asyncio.wait_for(api.submitted.wait(), 2)
+        text = await command(await next_event(native, adapter))
+        assert "正在" in text and "自动" in text
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert task not in adapter._send_tasks
+        assert [c[2] for c in native.calls if c[0] == "POST"] == [{"scope": "all"}]
+        api.states[""] = "available"
+        assert "下载成功 1" in await command(await next_event(native, adapter, "m3"))
+        assert len([c for c in native.calls if c[0] == "POST"]) == 2
     finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await adapter.terminate()
 
 
-async def test_known_download_job_recovers_after_restart_with_reads_only(serve, tmp_path):
-    native, adapter, event, api = await setup(serve, tmp_path)
-    api.state = "running"
-    try:
-        assert "处理中" in await command(event, "下载", "pack1")
-        config, api_url = dict(adapter.config), adapter.client.api_url
-        await adapter.terminate()
-        adapter = module("adapter").WeChatNativeAdapter(
-            config, {}, asyncio.Queue(), state_dir=tmp_path
-        )
-        adapter.bot_self_id = "bot"
-        await adapter.client.open()
-        adapter.client.api_url = api_url
-        api.state = "available"
-        await adapter.stickers.recover()
-        row = adapter.state.sticker_operation_by_job("a", "library-job")
-        assert row["state"] == "success"
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-    finally:
-        await adapter.terminate()
-
-
-async def test_cancellation_preserves_unknown_intent_and_removes_active_task(serve, tmp_path):
-    native, adapter, event, api = await setup(serve, tmp_path)
+async def test_cancelled_unknown_admission_is_not_reposted(serve, tmp_path, monkeypatch):
+    native, adapter, event, _ = await setup(serve, tmp_path, monkeypatch)
     entered = asyncio.Event()
-    original_request = adapter.client._request
+    original = adapter.client._request
 
     async def blocked(method, path, **kwargs):
         if method == "POST":
             entered.set()
             await asyncio.Future()
-        return await original_request(method, path, **kwargs)
+        return await original(method, path, **kwargs)
 
     adapter.client._request = blocked
+    task = asyncio.create_task(command(event))
     try:
-        task = asyncio.create_task(command(event, "下载", "pack1"))
         await asyncio.wait_for(entered.wait(), 2)
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
         assert task not in adapter._send_tasks
-        row = adapter.state.sticker_operation("a", "peer", "m1", "library:download")
-        assert row["state"] == "needs_review"
-        assert "待核对" in await command(await next_event(native, adapter), "下载", "pack1")
+        text = await command(await next_event(native, adapter))
+        assert "待核对" in text
         assert not any(c[0] == "POST" for c in native.calls)
     finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         await adapter.terminate()
 
 
-async def test_download_rechecks_feature_after_loading_membership(serve, tmp_path):
-    native, adapter, event, _ = await setup(serve, tmp_path)
-    original = adapter.client.sticker_packs
+async def test_sync_rechecks_permissions_after_polling_before_downloading(
+    serve, tmp_path, monkeypatch
+):
+    native, adapter, event, _ = await setup(serve, tmp_path, monkeypatch)
+    original = adapter.client.job
 
-    async def revoked():
-        data = await original()
+    async def revoke(ident):
+        job = await original(ident)
         adapter.native_config = replace(adapter.native_config, enable_stickers=False)
-        return data
+        return job
 
-    adapter.client.sticker_packs = revoked
+    adapter.client.job = revoke
     try:
-        assert "无法" in await command(event, "下载", "pack1")
-        assert not any(c[0] == "POST" for c in native.calls)
+        assert "无法" in await command(event)
+        assert [c[2] for c in native.calls if c[0] == "POST"] == [{"scope": "all"}]
     finally:
         await adapter.terminate()
 
 
-def test_library_claim_is_shared_across_database_connections(tmp_path):
+def test_library_claim_deduplicates_new_and_legacy_operations_across_connections(tmp_path):
     State = module("state").StateStore
     first, second = State(tmp_path / "state.sqlite3"), State(tmp_path / "state.sqlite3")
     try:
         one, won = first.claim_sticker("a", "p1", "m1", "library:download", "pack1", "k1", "h", 1)
         assert won
         first.finish_sticker("k1", "needs_review")
-        two, won = second.claim_sticker("a", "p2", "m2", "library:download", "pack1", "k2", "h", 2)
+        two, won = second.claim_sticker(
+            "a", "p2", "m2", "library:download:pack1", "pack1", "k2", "h", 2
+        )
         assert not won and two["idempotency_key"] == one["idempotency_key"]
     finally:
         first.close()
         second.close()
+
+
+@pytest.mark.parametrize("empty", [False, True])
+async def test_sync_skips_ready_packs_and_handles_empty_collection(
+    serve, tmp_path, monkeypatch, empty
+):
+    native, adapter, event, _ = await setup(serve, tmp_path, monkeypatch)
+    if empty:
+        native.packs = []
+    else:
+        native.packs[0]["contentReadiness"] = "available"
+    try:
+        text = await command(event)
+        if empty:
+            assert "没有已添加" in text
+        else:
+            assert "已就绪 1" in text and "下载成功 0" in text
+        assert [c[2] for c in native.calls if c[0] == "POST"] == [{"scope": "all"}]
+    finally:
+        await adapter.terminate()
+
+
+async def test_shutdown_cancels_polling_after_real_start_acknowledgement(
+    serve, tmp_path, monkeypatch
+):
+    native, adapter, event, api = await setup(serve, tmp_path, monkeypatch)
+    api.states[""] = "running"
+    plugin = object.__new__(module("main").WeChatNativePlugin)
+
+    async def consume():
+        return [r async for r in plugin.sticker_library(event)]
+
+    task = asyncio.create_task(consume())
+    try:
+        await asyncio.wait_for(api.submitted.wait(), 2)
+        assert task in adapter._send_tasks
+        await adapter.terminate()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert event.is_stopped()
+        assert not adapter._sticker_sync_running
+        assert [c[2] for c in native.calls if c[1].endswith("/sticker-downloads")] == []
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await adapter.terminate()

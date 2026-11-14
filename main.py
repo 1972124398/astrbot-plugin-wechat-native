@@ -83,7 +83,7 @@ class WeChatNativePlugin(Star):
     ) -> str:
         """查找当前微信账号本地已有 GIF 缓存的 Saved 与已添加官方表情包候选。
 
-        表情包由管理员提前添加到当前微信账号，并在私聊中使用 /表情包 指令下载。
+        表情包由管理员提前添加到当前微信账号，并在私聊中使用 /表情包同步 自动下载。
         仅返回 Native 本地已有可用原始 GIF 的候选；素材准备在聊天前完成。
         可按当前用户请求或正常聊天语境选择；不自动发送。支持按官方 caption、包名
         以及插件本地记录的表情描述匹配。无描述时不能凭图片 ID 猜含义。
@@ -256,14 +256,18 @@ class WeChatNativePlugin(Star):
     async def terminate(self):
         await self.connection_monitor.stop()
 
-    @filter.command("表情包", alias={"stickers"})
+    @filter.command("表情包同步")
     @filter.permission_type(filter.PermissionType.ADMIN)
-    async def sticker_library(
-        self, event: AstrMessageEvent, action: str = "帮助", target: str = ""
-    ):
-        """管理员在微信私聊中同步、查看、下载表情包或查询任务。"""
-        yield event.plain_result(await run_sticker_command(event, action, target))
-        event.stop_event()
+    async def sticker_library(self, event: AstrMessageEvent):
+        """管理员私聊一键同步目录并下载所有已添加的表情包。"""
+
+        async def notify(text):
+            await event.send(event.plain_result(text))
+
+        try:
+            yield event.plain_result(await run_sticker_command(event, notify=notify))
+        finally:
+            event.stop_event()
 
     @filter.command("绑定通知", alias={"bind_alert"})
     @filter.permission_type(filter.PermissionType.ADMIN)
