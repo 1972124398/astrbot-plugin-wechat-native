@@ -262,61 +262,6 @@ async def test_invalid_quote_never_enters_visual_chain(serve, tmp_path, change):
         await adapter.terminate()
 
 
-async def save_event(serve, tmp_path, **options):
-    raw = quoted()
-    raw["body"] = "请收藏这个表情"
-    native, adapter = await setup(serve, tmp_path, raw, **options)
-    return native, adapter, await deliver(adapter, raw)
-
-
-async def save(event, caption=""):
-    plugin = object.__new__(module("main").WeChatNativePlugin)
-    return json.loads(await plugin.wechat_save_quoted_sticker(event, caption))
-
-
-async def test_save_requires_confirmed_writeback_and_reuses_receipt(serve, tmp_path):
-    native, adapter, event = await save_event(serve, tmp_path)
-    try:
-        native.writeback = "pending"
-        assert (await save(event))["status"] == "needs_review"
-        native.writeback = "complete"
-        assert (await save(event))["status"] == "success"
-        assert (await save(event))["status"] == "success"
-        posts = [c for c in native.calls if c[0] == "POST"]
-        assert len(posts) == 1
-        assert posts[0][2] == {
-            "source": {"kind": "message", "messageId": "m1", "assetId": "sticker-original"}
-        }
-        row = adapter.state.sticker_operation("a", "peer", "m1", "save")
-        assert row["content_id"] == CONTENT_ID
-        assert row["idempotency_key"] == posts[0][3]
-        assert row["job_id"] == "job1" and row["state"] == "success"
-    finally:
-        await adapter.terminate()
-
-
-async def test_already_saved_is_success_without_post_and_phone_deletion_is_observed(
-    serve, tmp_path
-):
-    native, adapter, event = await save_event(serve, tmp_path)
-    try:
-        native.saved = [{"id": CONTENT_ID, "caption": None, "original": None}]
-        data = await save(event)
-        assert data["status"] == "already_saved" and data["ok"]
-        assert not any(c[0] == "POST" for c in native.calls)
-        native.raw = dict(native.raw, id="m2", serverId="901")
-        native.asset["messageId"] = "m2"
-        event2 = await deliver(adapter, native.raw)
-        assert (await save(event2))["status"] == "already_saved"
-        native.saved = []
-        native.raw = dict(native.raw, id="m3", serverId="902")
-        native.asset["messageId"] = "m3"
-        assert (await save(await deliver(adapter, native.raw)))["status"] == "success"
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-    finally:
-        await adapter.terminate()
-
-
 async def test_sqlite_claim_serializes_same_content_across_connections(tmp_path):
     State = module("state").StateStore
     first, second = State(tmp_path / "shared.sqlite3"), State(tmp_path / "shared.sqlite3")
@@ -332,45 +277,6 @@ async def test_sqlite_claim_serializes_same_content_across_connections(tmp_path)
     finally:
         first.close()
         second.close()
-
-
-async def test_concurrent_save_and_lost_admission_never_resubmit_after_restart(serve, tmp_path):
-    native, adapter, event = await save_event(serve, tmp_path)
-    native.post_status = 503
-    try:
-        results = await asyncio.gather(*[save(event) for _ in range(4)])
-        assert all(r["status"] == "needs_review" for r in results)
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-        cfg = dict(adapter.config)
-        await adapter.terminate()
-        adapter = module("adapter").WeChatNativeAdapter(
-            cfg, {}, asyncio.Queue(), state_dir=tmp_path
-        )
-        adapter.bot_self_id = "bot"
-        await adapter.client.open()
-        await adapter.stickers.recover()
-        native.raw = dict(native.raw, id="m2", serverId="901")
-        native.asset["messageId"] = "m2"
-        assert (await save(await deliver(adapter, native.raw)))["status"] == "needs_review"
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-    finally:
-        await adapter.terminate()
-
-
-@pytest.mark.parametrize("change", ["original", "wxgf", "scope"])
-async def test_save_denies_unverified_source(serve, tmp_path, change):
-    native, adapter, event = await save_event(serve, tmp_path)
-    try:
-        if change == "original":
-            native.asset.update(variant="thumbnail", actualVariant="thumbnail")
-        elif change == "wxgf":
-            native.asset["contentType"] = "image/x-wxgf"
-        else:
-            native.raw = dict(native.raw, threadId="elsewhere")
-        assert (await save(event))["status"] in {"permission_denied", "not_available"}
-        assert not any(c[0] == "POST" for c in native.calls)
-    finally:
-        await adapter.terminate()
 
 
 async def test_transfer_intent_is_durable_and_lost_response_is_never_reposted(serve, tmp_path):
@@ -616,9 +522,12 @@ async def test_sticker_switches_and_existing_access_policy(serve, tmp_path, disa
 @pytest.mark.parametrize("action", ["save", "send"])
 async def test_receipts_recover_after_restart_using_reads_only(serve, tmp_path, action):
     if action == "save":
-        native, adapter, event = await save_event(serve, tmp_path)
-        native.job_state = "running"
-        assert (await save(event))["status"] == "pending"
+        # Retain read-only recovery for jobs submitted before Saved import was removed.
+        native, adapter = await setup(serve, tmp_path)
+        row, _ = adapter.stickers.claim(
+            native.raw, "save", CONTENT_ID, {"assetId": "sticker-original"}
+        )
+        adapter.state.finish_sticker(row["idempotency_key"], "pending", "job1")
     else:
         native, adapter, event = await send_event(serve, tmp_path)
         native.job_state = "running"
@@ -638,7 +547,7 @@ async def test_receipts_recover_after_restart_using_reads_only(serve, tmp_path, 
         assert row["state"] == "success"
         if action == "send":
             assert adapter.state.message_status("m1") == "replied"
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
+        assert len([c for c in native.calls if c[0] == "POST"]) == (1 if action == "send" else 0)
     finally:
         await adapter.terminate()
 
@@ -698,35 +607,6 @@ async def test_adapter_startup_recovers_sticker_jobs_without_new_post(serve, tmp
         await adapter.terminate()
 
 
-async def test_save_reconciled_noop_is_success_and_bad_job_identity_stays_blocked(serve, tmp_path):
-    native, adapter, event = await save_event(serve, tmp_path)
-    native.acceptance = "reconciled_noop"
-    try:
-        assert (await save(event))["status"] == "success"
-        native.raw = dict(native.raw, id="m2", serverId="901")
-        native.asset["messageId"] = "m2"
-        event2 = await deliver(adapter, native.raw)
-        native.job_state = "running"
-        assert (await save(event2))["status"] == "pending"
-        original_job = native.job
-        native.job = lambda *a, **kw: dict(original_job(*a, **kw), accountId="other")
-        assert (await save(event2))["status"] == "needs_review"
-        assert len([c for c in native.calls if c[0] == "POST"]) == 2
-    finally:
-        await adapter.terminate()
-
-
-@pytest.mark.parametrize("body", ["请收藏这个表情", "这个表情怎么样", "哈哈"])
-async def test_save_does_not_depend_on_request_wording(serve, tmp_path, body):
-    native, adapter, event = await save_event(serve, tmp_path)
-    native.raw["body"] = event.message_obj.raw_message["body"] = body
-    try:
-        assert (await save(event))["status"] == "success"
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-    finally:
-        await adapter.terminate()
-
-
 def test_accepted_sticker_receipt_settles_outbox_and_message_in_one_transaction(tmp_path):
     State = module("state").StateStore
     path = tmp_path / "atomic.sqlite3"
@@ -768,27 +648,6 @@ async def test_delayed_send_acceptance_still_counts_toward_loop_limit(serve, tmp
         await adapter.terminate()
 
 
-@pytest.mark.parametrize("policy", ["feature"])
-async def test_save_rechecks_permission_after_last_catalog_await(serve, tmp_path, policy):
-    from dataclasses import replace
-
-    native, adapter, event = await save_event(serve, tmp_path)
-    catalog = adapter.client.custom_stickers
-
-    async def revoked():
-        data = await catalog()
-        change = {"enable_stickers": False}
-        adapter.native_config = replace(adapter.native_config, **change)
-        return data
-
-    adapter.client.custom_stickers = revoked
-    try:
-        assert (await save(event))["status"] in {"permission_denied", "not_available"}
-        assert not any(c[0] == "POST" for c in native.calls)
-    finally:
-        await adapter.terminate()
-
-
 def test_invalid_sticker_frame_reports_unsupported_format():
     with pytest.raises(module("native_client").MediaError, match="unsupported_format"):
         module("event").sticker_preview(b"GIF89a\x02\x00\x02\x00\x00\x00\x00;")
@@ -812,31 +671,6 @@ async def test_existing_native_media_transfer_is_polled_without_post(serve, tmp_
         await adapter.terminate()
 
 
-async def test_failed_save_without_remote_rejection_evidence_keeps_content_blocked(serve, tmp_path):
-    native, adapter, event = await save_event(serve, tmp_path)
-    native.job_state = "failed"
-    original_job = native.job
-    native.job = lambda *args, **kwargs: dict(original_job(*args, **kwargs), result={})
-    try:
-        assert (await save(event))["status"] == "needs_review"
-        native.raw = dict(native.raw, id="m2", serverId="901")
-        native.asset["messageId"] = "m2"
-        assert (await save(await deliver(adapter, native.raw)))["status"] == "needs_review"
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-    finally:
-        await adapter.terminate()
-
-
-async def test_save_tool_accepts_any_user_without_media_preview(serve, tmp_path):
-    native, adapter, event = await save_event(serve, tmp_path, enable_media=False)
-    try:
-        assert not adapter.native_config.wechat_action_admins
-        assert (await save(event))["status"] == "success"
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-    finally:
-        await adapter.terminate()
-
-
 def group_quote():
     raw = quoted()
     raw.update(threadId="room@chatroom", body="哈哈，这个很有意思")
@@ -852,152 +686,24 @@ async def process_quote(adapter, raw, *, origin="live"):
 
 
 @pytest.mark.parametrize("media", [True, False])
-async def test_group_quote_auto_saves_for_any_member_without_mention_or_model(
-    serve, tmp_path, media
-):
-    native, adapter = await setup(serve, tmp_path, group_quote(), enable_media=media)
-    try:
-        assert not adapter.native_config.wechat_action_admins
-        await process_quote(adapter, native.raw)
-        assert adapter._event_queue.empty()
-        posts = [c for c in native.calls if c[0] == "POST"]
-        assert len(posts) == 1
-        assert posts[0][1].endswith("/custom-stickers")
-        assert posts[0][2] == {
-            "source": {"kind": "message", "messageId": "m1", "assetId": "sticker-original"}
-        }
-        row = adapter.state.sticker_operation("a", "room@chatroom", "m1", "save")
-        assert row["state"] == "success" and row["content_id"] == CONTENT_ID
-        assert row["idempotency_key"] == posts[0][3]
-        assert adapter.state.message_status("m1") == "no_reply"
-    finally:
-        await adapter.terminate()
-
-
-async def test_group_auto_save_skips_existing_saved_and_duplicate_events(serve, tmp_path):
-    native, adapter = await setup(serve, tmp_path, group_quote())
-    native.saved = [{"id": CONTENT_ID}]
-    try:
-        await process_quote(adapter, native.raw)
-        await process_quote(adapter, native.raw)
-        native.raw = dict(native.raw, id="m2", serverId="901", senderId="other-member")
-        native.asset["messageId"] = "m2"
-        await process_quote(adapter, native.raw)
-        assert not any(c[0] == "POST" for c in native.calls)
-        assert (
-            adapter.state.sticker_operation("a", "room@chatroom", "m2", "save")["state"]
-            == "already_saved"
-        )
-        assert adapter._event_queue.empty()
-    finally:
-        await adapter.terminate()
-
-
-async def test_unknown_automatic_save_blocks_same_content_after_restart(serve, tmp_path):
-    native, adapter = await setup(serve, tmp_path, group_quote())
-    native.post_status = 503
-    try:
-        await process_quote(adapter, native.raw)
-        row = adapter.state.sticker_operation("a", "room@chatroom", "m1", "save")
-        assert row["state"] == "needs_review"
-        cfg = dict(adapter.config)
-        await adapter.terminate()
-        adapter = module("adapter").WeChatNativeAdapter(
-            cfg, {}, asyncio.Queue(), state_dir=tmp_path
-        )
-        adapter.bot_self_id = "bot"
-        await adapter.client.open()
-        await adapter.stickers.recover()
-        native.raw = dict(native.raw, id="m2", serverId="901", senderId="other-member")
-        native.asset["messageId"] = "m2"
-        await process_quote(adapter, native.raw)
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-        assert adapter._event_queue.empty()
-    finally:
-        await adapter.terminate()
-
-
-@pytest.mark.parametrize(
-    "blocked",
-    [
-        "disabled",
-        "group_disabled",
-        "whitelist",
-        "history",
-        "self",
-        "recalled",
-        "unsupported",
-        "private",
-    ],
-)
-async def test_group_auto_save_keeps_existing_scope_and_valid_quote_guards(
-    serve, tmp_path, blocked
-):
-    from dataclasses import replace
-
-    native, adapter = await setup(serve, tmp_path, group_quote())
-    origin = "live"
-    if blocked == "disabled":
-        adapter.native_config = replace(adapter.native_config, enable_stickers=False)
-    elif blocked == "group_disabled":
-        adapter.native_config = replace(adapter.native_config, group_reply_mode="disabled")
-    elif blocked == "whitelist":
-        adapter.native_config = replace(adapter.native_config, allowed_groups=frozenset({"other"}))
-    elif blocked == "history":
-        origin = "history"
-    elif blocked == "self":
-        native.raw["senderId"] = "bot"
-    elif blocked in {"recalled", "unsupported"}:
-        native.raw["quote"]["state"] = blocked
-    else:
-        native.raw["threadId"] = "peer"
-    try:
-        await process_quote(adapter, native.raw, origin=origin)
-        assert not any(c[0] == "POST" for c in native.calls)
-    finally:
-        await adapter.terminate()
-
-
-async def test_mentioned_group_quote_keeps_visual_handoff_and_shares_save_receipt(serve, tmp_path):
+@pytest.mark.parametrize("mentioned", [True, False])
+async def test_group_quote_never_saves_sticker(serve, tmp_path, media, mentioned):
     from astrbot.api.message_components import Image
 
     raw = group_quote()
-    raw["mentions"]["self"] = True
-    native, adapter = await setup(serve, tmp_path, raw)
+    raw["mentions"]["self"] = mentioned
+    native, adapter = await setup(serve, tmp_path, raw, enable_media=media)
     try:
-        await process_quote(adapter, native.raw)
-        event = adapter._event_queue.get_nowait()
-        assert any(isinstance(c, Image) for c in event.message_obj.message)
-        assert (await save(event))["status"] == "success"
-        assert len([c for c in native.calls if c[0] == "POST"]) == 1
-    finally:
-        await adapter.terminate()
-
-
-@pytest.mark.parametrize("revoke", ["feature", "whitelist", "recall"])
-async def test_group_auto_save_rechecks_scope_before_post(serve, tmp_path, revoke):
-    from dataclasses import replace
-
-    native, adapter = await setup(serve, tmp_path, group_quote())
-    catalog = adapter.client.custom_stickers
-
-    async def revoked():
-        data = await catalog()
-        if revoke == "feature":
-            adapter.native_config = replace(adapter.native_config, enable_stickers=False)
-        elif revoke == "whitelist":
-            adapter.native_config = replace(
-                adapter.native_config, allowed_groups=frozenset({"other"})
-            )
-        else:
-            adapter.state.recall("room@chatroom", native.raw["quote"]["serverId"], None)
-        return data
-
-    adapter.client.custom_stickers = revoked
-    try:
-        await process_quote(adapter, native.raw)
+        await process_quote(adapter, raw)
+        await process_quote(adapter, raw)
         assert not any(c[0] == "POST" for c in native.calls)
-        assert adapter._event_queue.empty()
+        assert adapter.state.sticker_operation("a", "room@chatroom", "m1", "save") is None
+        if mentioned and media:
+            event = adapter._event_queue.get_nowait()
+            assert any(isinstance(c, Image) for c in event.message_obj.message)
+            assert adapter._event_queue.empty()
+        elif not mentioned:
+            assert adapter._event_queue.empty()
     finally:
         await adapter.terminate()
 
@@ -1033,7 +739,6 @@ async def test_empty_catalog_reports_native_counts_without_claiming_save_failure
         assert data["catalog"]["saved_count"] == 0
         assert data["catalog"]["added_pack_count"] == 0
         assert data["catalog"]["native_version"] == "2.4.0"
-        assert "不能判断" in data["message"]
         assert "saved_count=0 added_pack_count=0" in caplog.text
         assert not any(c[0] == "POST" for c in native.calls)
     finally:
@@ -1048,48 +753,6 @@ async def test_query_no_match_keeps_nonempty_catalog_counts(serve, tmp_path):
         assert data["reason"] == "sticker_query_no_match"
         assert data["catalog"]["saved_count"] == 1
         assert data["catalog"]["added_pack_count"] == 1
-    finally:
-        await adapter.terminate()
-
-
-@pytest.mark.parametrize(
-    "change,reason",
-    [
-        ({"embeddedSticker": False}, "sticker_quote_unavailable"),
-        ({"state": "unsupported"}, "sticker_quote_unavailable"),
-        ({"state": "recalled"}, "sticker_original_recalled"),
-    ],
-)
-async def test_save_explains_unavailable_quote_instead_of_generic_failure(
-    serve, tmp_path, caplog, change, reason
-):
-    raw = quoted(**change)
-    raw["quote"]["embeddedText"] = "synthetic-secret-body"
-    native, adapter = await setup(serve, tmp_path, raw)
-    try:
-        event = await deliver(adapter, native.raw)
-        data = await save(event)
-        assert data["status"] == "not_available"
-        assert data["reason"] == reason
-        assert "引用" in data["message"]
-        assert "quote_type=47" in caplog.text
-        assert "embedded_sticker=" in caplog.text
-        assert "synthetic-secret-body" not in caplog.text
-        assert not any(c[0] == "POST" for c in native.calls)
-    finally:
-        await adapter.terminate()
-
-
-async def test_save_handles_missing_quote_object_as_unavailable(serve, tmp_path):
-    raw = quoted()
-    raw["quote"] = None
-    native, adapter = await setup(serve, tmp_path, raw)
-    try:
-        event = await deliver(adapter, native.raw)
-        data = await save(event)
-        assert data["status"] == "not_available"
-        assert data["reason"] == "sticker_quote_unavailable"
-        assert not any(c[0] == "POST" for c in native.calls)
     finally:
         await adapter.terminate()
 
@@ -1273,83 +936,10 @@ async def test_send_rejects_unready_original_without_pack_download(serve, tmp_pa
         await adapter.terminate()
 
 
-async def test_save_stores_local_caption_for_find_and_respects_phone_deletion(serve, tmp_path):
-    native, adapter, event = await save_event(serve, tmp_path)
+async def test_find_uses_vision_labeler_for_missing_saved_caption(serve, tmp_path):
+    native, adapter, search_event = await send_event(serve, tmp_path)
+    native.saved[0]["caption"] = ""
     try:
-        saved_res = await save(event, caption="小猫流泪 伤心 委屈")
-        assert saved_res["status"] == "success"
-        posts = [c for c in native.calls if c[0] == "POST"]
-        assert len(posts) == 1
-        assert "caption" not in posts[0][2]
-        assert "caption" not in posts[0][2]["source"]
-
-        # Re-saving / annotating an already_saved item updates local label cleanly.
-        native.saved = [{"id": CONTENT_ID, "caption": None, "original": None}]
-        native.raw = dict(native.raw, id="m2", serverId="901")
-        native.asset["messageId"] = "m2"
-        event2 = await deliver(adapter, native.raw)
-        assert (await save(event2, caption="伤心 哭哭"))["status"] == "already_saved"
-
-        # Expose ready local GIF cache on Saved item with empty official caption.
-        native.saved = [
-            {
-                "id": CONTENT_ID,
-                "caption": None,
-                "original": dict(native.asset, id=f"sticker_saved_{CONTENT_ID}", messageId=None),
-            }
-        ]
-        native.raw = message(id="m3", serverId="902")
-        search_event = await deliver(adapter, native.raw)
-        found = await find(search_event, "伤心")
-        assert found["count"] == 1
-        assert found["items"][0]["source"] == "saved"
-        assert "伤心" in found["items"][0]["caption"]
-        assert (await send_sticker(search_event, found["items"][0]["selection_id"]))[
-            "status"
-        ] == "success"
-
-        # Phone deletion still removes the sticker from find() despite local sticker_labels row.
-        native.saved = []
-        assert (await find(search_event, "伤心"))["count"] == 0
-    finally:
-        await adapter.terminate()
-
-
-async def test_auto_save_and_find_use_vision_labeler_for_missing_captions(serve, tmp_path):
-    native, adapter = await setup(
-        serve, tmp_path, group_quote(), enable_history_tools=False, group_reply_mode="all"
-    )
-    labeled_umo = []
-
-    async def fake_labeler(preview_png, umo=""):
-        labeled_umo.append((len(preview_png) > 0, umo))
-        return "熊猫头 抱拳 感谢\n谢谢"
-
-    adapter.sticker_labeler = fake_labeler
-    try:
-        await process_quote(adapter, native.raw)
-        row = adapter.state.sticker_label("a", CONTENT_ID)
-        assert row is not None
-        assert row["caption"] == "熊猫头 抱拳 感谢 谢谢"
-        assert row["ready_gif"] == 1
-        assert labeled_umo and labeled_umo[0][0] and labeled_umo[0][1].endswith(":room@chatroom")
-
-        # Unlabelled locally-cached Saved sticker gets labeled during find() via plugin labeler.
-        other_id = "e" * 32
-        native.saved = [
-            {
-                "id": CONTENT_ID,
-                "caption": "",
-                "original": dict(native.asset, id=f"sticker_saved_{CONTENT_ID}", messageId=None),
-            },
-            {
-                "id": other_id,
-                "caption": "",
-                "original": dict(native.asset, id=f"sticker_saved_{other_id}", messageId=None),
-            },
-        ]
-        native.raw = message(id="m2", serverId="901")
-        search_event = await deliver(adapter, native.raw)
 
         class FakeContext:
             async def get_current_chat_provider_id(self, umo):
@@ -1365,7 +955,8 @@ async def test_auto_save_and_find_use_vision_labeler_for_missing_captions(serve,
         data = json.loads(await plugin.wechat_find_stickers(search_event, "开心"))
         assert data["count"] == 1
         assert "小狗" in data["items"][0]["caption"]
-        assert adapter.state.sticker_label("a", other_id)["caption"] == "小狗 开心 摇尾巴"
+        assert adapter.state.sticker_label("a", CONTENT_ID)["caption"] == "小狗 开心 摇尾巴"
+        assert not any(c[0] == "POST" for c in native.calls)
     finally:
         await adapter.terminate()
 
@@ -1476,7 +1067,7 @@ def missing_quote(**changes):
     return raw
 
 
-async def test_missing_sticker_quote_resolves_original_message_and_saves(serve, tmp_path):
+async def test_missing_sticker_quote_resolves_original_message_without_saving(serve, tmp_path):
     from astrbot.api.message_components import Image, Reply
 
     orig = message(id="m_orig", type=47, serverId="800", senderId="other", body=None)
@@ -1493,12 +1084,7 @@ async def test_missing_sticker_quote_resolves_original_message_and_saves(serve, 
         )
         assert any(p.endswith("/messages/m_orig/media") for _, p, _, _ in native.calls)
 
-        data = await save(event, "猫猫")
-        assert data["ok"] and data["status"] == "success"
-        post = [c for c in native.calls if c[0] == "POST" and c[1].endswith("/custom-stickers")][0]
-        assert post[2] == {
-            "source": {"kind": "message", "messageId": "m_orig", "assetId": "orig-asset"}
-        }
+        assert not any(c[0] == "POST" for c in native.calls)
     finally:
         await adapter.terminate()
 

@@ -54,8 +54,8 @@ DEFAULT_CONFIG = {
 CONFIG_METADATA = {
     "enable_stickers": {
         "type": "bool",
-        "description": "启用原生表情读取、收藏与发送",
-        "hint": "Native v2.4.0；群聊引用自动去重收藏，无需管理员或 @；视觉识别使用媒体开关。",
+        "description": "启用原生表情读取、查找与发送",
+        "hint": "先在微信添加表情包，管理员私聊 /表情包 同步、列表、下载；视觉识别使用媒体开关。",
     },
     "enable_wechat_actions": {
         "type": "bool",

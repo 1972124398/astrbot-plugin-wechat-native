@@ -1071,21 +1071,30 @@ class NativeClient:
             "GET", self.prefix + "/sticker-packs/" + quote(pack_id, safe="") + "/stickers"
         )
 
-    async def save_sticker(self, message_id, asset_id, key):
-        return await self._request(
-            "POST",
-            self.prefix + "/custom-stickers",
-            json={"source": {"kind": "message", "messageId": message_id, "assetId": asset_id}},
-            headers={"Idempotency-Key": key},
-            expected_status=202,
-        )
-
     async def download_sticker(self, pack_id, sticker_id, key):
         return await self._request(
             "POST",
             self.prefix + "/sticker-downloads",
             json={"packId": pack_id, "stickerId": sticker_id},
             headers={"Idempotency-Key": key},
+        )
+
+    async def download_sticker_pack(self, pack_id, key):
+        return await self._request(
+            "POST",
+            self.prefix + "/sticker-downloads",
+            json={"packId": pack_id},
+            headers={"Idempotency-Key": key},
+            expected_status=202,
+        )
+
+    async def sync_stickers(self, key):
+        return await self._request(
+            "POST",
+            self.prefix + "/sticker-syncs",
+            json={"scope": "all"},
+            headers={"Idempotency-Key": key},
+            expected_status=202,
         )
 
     async def media_content(

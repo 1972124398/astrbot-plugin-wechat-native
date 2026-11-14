@@ -92,68 +92,6 @@ class StickerService:
             self.adapter.native_config.enable_media,
         )
 
-    def auto_save_eligible(self, raw, origin="live"):
-        cfg = self.adapter.native_config
-        thread = raw.get("threadId", "")
-        return (
-            cfg.enable_stickers
-            and cfg.group_reply_mode != "disabled"
-            and origin == "live"
-            and raw.get("accountId") == cfg.account_id
-            and thread.endswith("@chatroom")
-            and (not cfg.allowed_groups or thread in cfg.allowed_groups)
-            and raw.get("direction") == "incoming"
-            and isinstance(raw.get("senderId"), str)
-            and bool(raw["senderId"])
-            and raw["senderId"] != self.adapter.bot_self_id
-            and raw.get("recall") is None
-            and quoted_sticker_candidate(raw)
-            and self.adapter._check_timestamp(raw)
-        )
-
-    async def auto_save(self, raw):
-        """Silently save a validated live group quote, independently of model wake-up."""
-        adapter = self.adapter
-
-        def authorize():
-            if (
-                adapter.stopped
-                or adapter._state_closed
-                or adapter.client.closed
-                or not self.auto_save_eligible(raw)
-                or adapter.loop_guard.blocked(raw["threadId"])
-                or adapter.state.message_status(raw["id"]) not in {"queued", "replied", "no_reply"}
-                or not adapter.state.message_matches(
-                    raw["id"], raw["threadId"], raw.get("serverId")
-                )
-                or adapter.state.is_recalled(raw["threadId"], raw["quote"].get("serverId"))
-            ):
-                raise ToolError("not_available", "automatic_sticker_source_invalidated")
-
-        try:
-            labeler = None
-            bound = getattr(adapter, "sticker_labeler", None)
-            if callable(bound) and adapter.native_config.enable_media:
-                umo = f"{adapter.meta().id}:GroupMessage:{raw['threadId']}"
-
-                async def auto_label(preview_png: bytes) -> str:
-                    return await bound(preview_png, umo)
-
-                labeler = auto_label
-            async with adapter._media_semaphore:
-                outcome = await self._save_quote(raw, authorize, labeler=labeler)
-            logger.info(
-                "WeChat Native 引用表情自动收藏：message=%s status=%s",
-                raw["id"],
-                outcome["status"],
-            )
-        except Exception as error:
-            logger.warning(
-                "WeChat Native 引用表情自动收藏未完成：message=%s error_type=%s",
-                raw["id"],
-                type(error).__name__,
-            )
-
     async def _check_original_message(self, raw, original_id):
         adapter = self.adapter
         quote = raw.get("quote")
@@ -418,6 +356,10 @@ class StickerService:
 
     async def inspect(self, row, job=None):
         action, key = row["action"], row["idempotency_key"]
+        if action.startswith("library:"):
+            from .sticker_commands import inspect_library_operation
+
+            return await inspect_library_operation(self.adapter, row, job)
         acquiring = action.startswith("acquire:")
         if action == "send":
             return await self.inspect_send(row)
@@ -552,144 +494,8 @@ class StickerService:
         except Exception:
             return ""
 
-    async def _record_saved_label(
-        self,
-        content_id,
-        asset,
-        *,
-        caption="",
-        official_caption="",
-        data=None,
-        labeler=None,
-    ):
-        account = self.adapter.native_config.account_id
-        content_type = str(asset.get("contentType") or "") if isinstance(asset, dict) else ""
-        ready_gif = content_type == "image/gif"
-        local_caption = clean_sticker_caption(caption)
-        if not local_caption and labeler and data:
-            existing = self.adapter.state.sticker_label(account, content_id)
-            if not (existing and existing["caption"]) and not clean_sticker_caption(
-                official_caption
-            ):
-                local_caption = await self._generate_caption(labeler, data)
-        self.adapter.state.upsert_sticker_label(
-            account,
-            content_id,
-            caption=local_caption or None,
-            ready_gif=ready_gif,
-            content_type=content_type,
-        )
-
-    async def save(self, event, caption="", *, labeler=None):
-        if not isinstance(caption, str):
-            raise ToolError("invalid_request")
-        return await self._save_quote(
-            event.message_obj.raw_message,
-            lambda: context(event, stickers=True),
-            caption=caption,
-            labeler=labeler,
-        )
-
-    async def _save_quote(self, raw, authorize, *, caption="", labeler=None):
-        authorize()
-        clean_caption = clean_sticker_caption(caption)
-        self.log_quote(raw, "save")
-        existing = self.adapter.state.sticker_operation(
-            raw["accountId"], raw["threadId"], raw["id"], "save"
-        )
-        if existing:
-            outcome = await self.inspect(existing)
-            if clean_caption and outcome["status"] in {"success", "already_saved"}:
-                self.adapter.state.upsert_sticker_label(
-                    self.adapter.native_config.account_id,
-                    existing["content_id"],
-                    caption=clean_caption,
-                )
-            return outcome
-        if not quoted_sticker_candidate(raw):
-            quote = raw.get("quote")
-            reason = (
-                "sticker_original_recalled"
-                if isinstance(quote, dict) and quote.get("state") == "recalled"
-                else "sticker_quote_unavailable"
-            )
-            raise ToolError("not_available", reason)
-        try:
-            data, asset, source_message_id = await self.read_quote_with_source(raw, original=True)
-            content_id = hashlib.md5(data).hexdigest()
-            saved = await self.adapter.client.custom_stickers()
-            if not isinstance(saved.get("items"), list):
-                raise ToolError("not_available")
-            await self.check_quote(raw, source_message_id=source_message_id)
-            authorize()
-        except MediaError as error:
-            raise ToolError("not_available", "sticker_original_" + error.reason) from None
-        row, won = self.claim(
-            raw,
-            "save",
-            content_id,
-            {
-                "messageId": source_message_id,
-                "assetId": asset["id"],
-                "contentId": content_id,
-            },
-        )
-        if not won:
-            outcome = await self.inspect(row)
-            if clean_caption and outcome["status"] in {"success", "already_saved"}:
-                self.adapter.state.upsert_sticker_label(
-                    self.adapter.native_config.account_id,
-                    row["content_id"],
-                    caption=clean_caption,
-                )
-            return outcome
-        key = row["idempotency_key"]
-        saved_match = next(
-            (
-                s
-                for s in saved["items"]
-                if isinstance(s, dict) and str(s.get("id", "")).lower() == content_id
-            ),
-            None,
-        )
-        if saved_match is not None:
-            self.adapter.state.finish_sticker(key, "already_saved")
-            await self._record_saved_label(
-                content_id,
-                asset,
-                caption=clean_caption,
-                official_caption=saved_match.get("caption") or "",
-                data=data,
-                labeler=labeler,
-            )
-            return result("save", "already_saved")
-        try:
-            job = await self.adapter.client.save_sticker(source_message_id, asset["id"], key)
-            outcome = await self.inspect(row, job)
-            if outcome["status"] == "success":
-                await self._record_saved_label(
-                    content_id,
-                    asset,
-                    caption=clean_caption,
-                    data=data,
-                    labeler=labeler,
-                )
-            return outcome
-        except BaseException as error:
-            state = (
-                "failed"
-                if isinstance(error, NativeAPIError)
-                and 400 <= error.status < 500
-                and error.status not in {408, 409, 429}
-                else "needs_review"
-            )
-            self.adapter.state.finish_sticker(key, state)
-            if isinstance(error, asyncio.CancelledError):
-                raise
-            return result("save", state)
-
     async def recover(self):
-        """Only query retained jobs. Missing admission receipts never authorize POST."""
+        """Read retained jobs, including legacy saves; never submit new operations."""
         for row in self.adapter.state.pending_stickers(self.adapter.native_config.account_id):
             await self.inspect(row)
 
@@ -912,10 +718,10 @@ class StickerService:
                 "sticker_query_no_match" if catalog else "native_sticker_catalog_empty"
             )
             output["message"] = (
-                "当前目录没有匹配该文字的候选，不能判断此前收藏是否成功。"
+                "当前目录没有匹配该文字的候选，请换用简短关键词或空查询查看可用表情。"
                 if catalog
                 else "Native 当前账号目录未返回本地可用的 GIF 表情，"
-                "不能判断手机库存或此前收藏是否成功。"
+                "请先在该账号添加并下载表情包，再重新查找。"
             )
         return output
 

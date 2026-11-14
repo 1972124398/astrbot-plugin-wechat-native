@@ -7,7 +7,7 @@ from aiohttp import web
 from astrbot.api import logger  # noqa: F401
 from conftest import module
 from test_history_tools import tool_event
-from test_stickers import find, save, save_event, send_event
+from test_stickers import find, send_event, send_sticker
 
 
 @pytest.mark.parametrize(
@@ -61,15 +61,15 @@ def test_business_errors_survive_full_module_reimport(caplog, direction):
         compile(Path(support.__file__).read_text(encoding="utf-8"), support.__file__, "exec"),
         namespace,
     )
-    old_error = support.ToolError("not_available", "sticker_original_unavailable")
-    new_error = namespace["ToolError"]("not_available", "sticker_original_unavailable")
+    old_error = support.ToolError("not_available", "sticker_saved_original_unavailable")
+    new_error = namespace["ToolError"]("not_available", "sticker_saved_original_unavailable")
     handler, error = (
         (namespace["error_result"], old_error)
         if direction == "old_error"
         else (support.error_result, new_error)
     )
-    assert handler("save", error)["status"] == "not_available"
-    assert "reason=sticker_original_unavailable" in caplog.text
+    assert handler("send", error)["status"] == "not_available"
+    assert "reason=sticker_saved_original_unavailable" in caplog.text
 
 
 async def test_disabled_history_logs_runtime_reason_without_request(serve, tmp_path, caplog):
@@ -208,22 +208,23 @@ async def test_sticker_tool_replaces_retained_service_after_plugin_reload(serve,
 
 
 async def test_replacing_retained_sticker_service_preserves_unknown_intent(serve, tmp_path):
-    native, adapter, event = await save_event(serve, tmp_path)
+    native, adapter, event = await send_event(serve, tmp_path)
+    selection = (await find(event))["items"][0]["selection_id"]
     native.post_status = 503
-    assert (await save(event))["status"] == "needs_review"
+    assert (await send_sticker(event, selection))["status"] == "needs_review"
     current_service = module("sticker_service").StickerService
 
-    async def legacy_save(self, event):
-        return {"ok": False, "status": "failed", "action": "save"}
+    async def legacy_send(self, event, selection_id):
+        return {"ok": False, "status": "failed", "action": "send"}
 
     previous_service = type(
         "StickerService",
         (current_service,),
-        {"__module__": current_service.__module__, "save": legacy_save},
+        {"__module__": current_service.__module__, "send": legacy_send},
     )
     adapter.stickers = previous_service(adapter)
     try:
-        assert (await save(event))["status"] == "needs_review"
+        assert (await send_sticker(event, selection))["status"] == "needs_review"
         assert len([c for c in native.calls if c[0] == "POST"]) == 1
     finally:
         await adapter.terminate()

@@ -29,13 +29,6 @@ MESSAGES = {
 }
 
 STICKER_ERROR_MESSAGES = {
-    "sticker_quote_unavailable": "当前引用没有携带可读取的表情内容，请重新引用原表情发送。",
-    "sticker_original_unavailable": "引用表情的可验证原图暂时不可用，尚未提交收藏。",
-    "sticker_original_expired": "引用表情的原图已失效，请重新发送并引用。",
-    "sticker_original_recalled": "引用表情或承载引用的消息已撤回，未提交收藏。",
-    "sticker_original_unsupported_format": "引用表情的原图格式暂不支持收藏，未提交收藏。",
-    "sticker_original_missing_scope": "读取引用表情的权限不足，请检查 Native 的媒体权限。",
-    "sticker_original_too_large": "引用表情的原图超过处理限制，未提交收藏。",
     "sticker_selection_expired": (
         "表情候选来自之前的消息或已过期，尚未提交发送。"
         "请在当前请求中重新查找候选，再发送新的 selection_id。"

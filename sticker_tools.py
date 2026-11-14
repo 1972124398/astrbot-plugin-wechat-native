@@ -14,7 +14,7 @@ async def run_sticker(event, action, *, labeler=None, **kwargs):
         adapter = ctx.adapter
         if type(adapter.stickers) is not StickerService:
             adapter.stickers = StickerService(adapter)
-        if labeler is not None and action in {"find", "save"}:
+        if labeler is not None and action == "find":
             kwargs["labeler"] = labeler
         adapter._send_tasks.add(task)
         return encode(await getattr(adapter.stickers, action)(event, **kwargs))

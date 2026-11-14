@@ -147,6 +147,10 @@ class StateStore:
                 ON sticker_operations(account, action, content_id)
                 WHERE action LIKE 'acquire:%'
                     AND state IN ('pending','submitting','needs_review');
+            CREATE UNIQUE INDEX IF NOT EXISTS sticker_library_inflight
+                ON sticker_operations(account, action, content_id)
+                WHERE action LIKE 'library:%'
+                    AND state IN ('pending','submitting','needs_review');
             CREATE TABLE IF NOT EXISTS sticker_labels (
                 account TEXT NOT NULL,
                 content_id TEXT NOT NULL,
@@ -207,7 +211,7 @@ class StateStore:
         with self.db:
             self.db.execute("BEGIN IMMEDIATE")
             existing = self.sticker_operation(account, thread, trigger, action)
-            if not existing and (action == "save" or action.startswith("acquire:")):
+            if not existing and (action == "save" or action.startswith(("acquire:", "library:"))):
                 row = self.db.execute(
                     "SELECT * FROM sticker_operations WHERE account=? AND content_id=? "
                     "AND action=? AND state IN ('pending','submitting','needs_review')",
@@ -267,6 +271,13 @@ class StateStore:
                 (account,),
             )
         ]
+
+    def sticker_operation_by_job(self, account, job_id):
+        row = self.db.execute(
+            "SELECT * FROM sticker_operations WHERE account=? AND job_id=? LIMIT 1",
+            (account, job_id),
+        ).fetchone()
+        return dict(row) if row else None
 
     def complete_sticker_send(self, key, job_id, server_id):
         """Commit the accepted receipt, outbox and source status atomically."""

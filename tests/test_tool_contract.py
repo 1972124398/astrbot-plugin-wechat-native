@@ -15,7 +15,6 @@ TOOLS = {
     "wechat_rename_group": {"name"},
     "wechat_recall_own_message": {"message_id"},
     "wechat_mention_member": {"username", "text"},
-    "wechat_save_quoted_sticker": {"caption"},
     "wechat_find_stickers": {"query", "limit"},
     "wechat_send_sticker": {"selection_id"},
 }
@@ -52,7 +51,6 @@ def test_real_astrbot_registry_exposes_scoped_tools():
         ("wechat_set_my_group_nickname", {"nickname": "new"}),
         ("wechat_rename_group", {"name": "new"}),
         ("wechat_recall_own_message", {}),
-        ("wechat_save_quoted_sticker", {}),
         ("wechat_find_stickers", {}),
         ("wechat_send_sticker", {"selection_id": "untrusted"}),
     ],
