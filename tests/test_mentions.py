@@ -49,6 +49,32 @@ async def test_mention_sends_native_username_once_without_admin_permissions(serv
         await adapter.terminate()
 
 
+async def test_shutdown_cancels_mention_until_post_send_hook_finishes(serve, tmp_path, monkeypatch):
+    from astrbot.api.event import AstrMessageEvent
+
+    adapter, event, _, sent = await mention_event(serve, tmp_path)
+    entered = asyncio.Event()
+
+    async def post_send_hook(self, chain):
+        entered.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(AstrMessageEvent, "send", post_send_hook)
+    plugin = object.__new__(module("main").WeChatNativePlugin)
+    task = asyncio.create_task(plugin.wechat_mention_member(event, "wxid_diver", "请查看群消息"))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        assert len(sent) == 1
+        await adapter.terminate()
+        assert task.done()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await adapter.terminate()
+
+
 @pytest.mark.parametrize(
     "username,text",
     [("", "hello"), ("all", "hello"), ("other@chatroom", "hello"),

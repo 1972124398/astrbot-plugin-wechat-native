@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.19 — 2026-11-15
+
+- Centralize nested send/tool task ownership so shutdown cancels mention-tool post-send hooks and sticker sync polling without manual task re-registration.
+- Share the sticker follow-up suppression rule between result decoration and event sending, preserving failure notices while preventing extra text/TTS after successful or unconfirmed sticker sends.
+- Remove unused helpers, obsolete test simulation branches and redundant diagnostic logs. Merge overlapping login and QR safety tests while preserving essential warnings/errors, secret-redaction checks and read-only legacy receipt recovery.
+
 ## 0.3.18 — 2026-11-15
 
 - Adapt group-member queries to Native v2.4.2 search: forward `search` on every page instead of filtering only the fetched page, preserving matches across nickname, WeChat ID, remark and group nickname fields.

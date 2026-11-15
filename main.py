@@ -8,7 +8,7 @@ from astrbot.api.provider import ProviderRequest
 from astrbot.api.star import Context, Star
 from astrbot.core.agent.message import TextPart
 
-from .adapter import WeChatNativeAdapter  # noqa: F401
+from .adapter import WeChatNativeAdapter, track_send_task  # noqa: F401
 from .alert_binding import AlertBindingService
 from .alert_sender import AlertSender
 from .config import PLUGIN_ID
@@ -319,9 +319,7 @@ class WeChatNativePlugin(Star):
         """Skip TTS and follow-up text/voice replies once a sticker was sent or is unconfirmed."""
         if not isinstance(event, WeChatNativeEvent):
             return
-        if event.get_extra(
-            "wechat_native_sticker_suppress_followup"
-        ) or event._sticker_send_state() in {"success", "submitting", "pending", "needs_review"}:
+        if event.should_suppress_sticker_followup():
             result = event.get_result()
             if result is not None and result.chain is not None:
                 result.chain.clear()
@@ -385,7 +383,6 @@ class WeChatNativePlugin(Star):
         if event.get_extra("wechat_native_ranking_started"):
             return
         adapter, key = event.adapter, (event.adapter, event.message_obj.message_id)
-        task = asyncio.current_task()
         started = False
         try:
             ctx = tool_context(event, group=True, send=True)
@@ -396,14 +393,14 @@ class WeChatNativePlugin(Star):
                 return
             event.set_extra("wechat_native_ranking_started", True)
             self._ranking_running.add(key)
-            adapter._send_tasks.add(task)
             started = True
-            self.logger.info("群聊排行榜开始统计：message=%s", ctx.message_id)
-            ranking = await collect_ranking(ctx)
-            analysis = await self._ranking_analysis(event, ranking)
-            tool_context(event, group=True, send=True)
-            event.set_extra("wechat_native_plain_reply", True)
-            await event.send(MessageChain().message(format_ranking(ranking, analysis)))
+            async with track_send_task(adapter):
+                self.logger.info("群聊排行榜开始统计：message=%s", ctx.message_id)
+                ranking = await collect_ranking(ctx)
+                analysis = await self._ranking_analysis(event, ranking)
+                tool_context(event, group=True, send=True)
+                event.set_extra("wechat_native_plain_reply", True)
+                await event.send(MessageChain().message(format_ranking(ranking, analysis)))
         except ToolError:
             pass
         except Exception as error:
@@ -411,7 +408,6 @@ class WeChatNativePlugin(Star):
         finally:
             if started:
                 self._ranking_running.discard(key)
-                adapter._send_tasks.discard(task)
                 if (
                     not adapter._state_closed
                     and adapter.state.message_status(raw["id"]) == "queued"

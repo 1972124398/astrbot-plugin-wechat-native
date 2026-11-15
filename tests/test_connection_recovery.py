@@ -129,14 +129,17 @@ async def test_native_login_uses_tag_specific_routes_body_and_admin_token(serve)
 @pytest.mark.parametrize(
     "body,mime,status",
     [
-        (b"<html>secret</html>", "text/html", 200),
-        (b"\x89PNG\r\n\x1a\ninvalid", "image/png", 200),
+        (b"<html>SENSITIVE</html>", "text/html", 200),
+        (b"\x89PNG\r\n\x1a\nSENSITIVE", "image/png", 200),
+        (b"not png", "image/png", 200),
         (b"x" * (1024 * 1024 + 1), "image/png", 200),
         (b"", "image/png", 409),
         (b"", "image/png", 302),
     ],
 )
-async def test_native_login_rejects_unsafe_qr(serve, body, mime, status):
+async def test_native_login_rejects_unsafe_qr(serve, caplog, body, mime, status):
+    caplog.set_level("INFO")
+
     async def handler(req):
         return web.Response(
             body=body,
@@ -149,6 +152,7 @@ async def test_native_login_rejects_unsafe_qr(serve, body, mime, status):
     async with native.NativeClient(await serve(handler) + "/v1", "a", "admin") as c:
         with pytest.raises(native.NativeAPIError):
             await c.login_qr("op-1", 1)
+    assert "SENSITIVE" not in caplog.text and "not png" not in caplog.text
 
 
 @pytest.mark.parametrize(
@@ -444,13 +448,23 @@ async def test_login_conflict_reuses_original_key_without_cancelling_unknown_tas
     assert "DELETE" not in methods
 
 
-async def test_failed_login_returns_safe_result_without_diagnostics(serve, tmp_path, caplog):
+@pytest.mark.parametrize(
+    "code",
+    [
+        "profile_network_routing_unavailable",
+        "SENSITIVE TOKEN",
+        {"private": "SENSITIVE"},
+        ["SENSITIVE"],
+        None,
+    ],
+)
+async def test_failed_login_returns_safe_result_without_diagnostics(serve, tmp_path, caplog, code):
     caplog.set_level("INFO")
     bot, state = await login_server(serve, tmp_path)
     state["operation"] = operation(
         "failed",
         result={
-            "code": "profile_network_routing_unavailable",
+            "code": code,
             "message": "SENSITIVE PROFILE PATH AND TOKEN",
             "qr": "PRIVATE QR",
         },
@@ -458,21 +472,9 @@ async def test_failed_login_returns_safe_result_without_diagnostics(serve, tmp_p
     manager = module("login_session").LoginSessionManager(state["kv"])
     result = await manager.start(bot)
     assert result == {"state": "failed", "qr_available": False}
-    assert "Native 登录诊断" not in caplog.text
     assert "SENSITIVE" not in caplog.text and "PRIVATE QR" not in caplog.text
     assert "synthetic-admin-token" not in caplog.text
     assert state["gets"] == 0
-
-
-@pytest.mark.parametrize("code", ["SENSITIVE TOKEN", {"private": "SENSITIVE"}, ["SENSITIVE"], None])
-async def test_unknown_native_failure_is_safe_without_diagnostics(serve, tmp_path, caplog, code):
-    caplog.set_level("INFO")
-    bot, state = await login_server(serve, tmp_path)
-    state["operation"] = operation("failed", result={"code": code, "message": "PRIVATE BODY"})
-    result = await module("login_session").LoginSessionManager(state["kv"]).start(bot)
-    assert result == {"state": "failed", "qr_available": False}
-    assert "Native 登录诊断" not in caplog.text
-    assert "SENSITIVE" not in caplog.text and "PRIVATE BODY" not in caplog.text
 
 
 async def test_terminal_login_status_reuses_cached_result_without_diagnostics(
@@ -525,28 +527,6 @@ async def test_login_http_errors_are_safe_without_diagnostics(
     assert "Native 登录诊断" not in caplog.text
     assert "SENSITIVE SERVER BODY" not in caplog.text
     assert "synthetic-admin-token" not in caplog.text
-
-
-@pytest.mark.parametrize(
-    "body,mime",
-    [
-        (b"not png", "text/html"),
-        (b"not png", "image/png"),
-        (b"x" * (1024 * 1024 + 1), "image/png"),
-        (b"\x89PNG\r\n\x1a\nSENSITIVE", "image/png"),
-    ],
-)
-async def test_invalid_qr_rejected_without_image_or_diagnostic_logs(serve, caplog, body, mime):
-    caplog.set_level("INFO")
-    async def handler(req):
-        return web.Response(body=body, content_type=mime)
-
-    native = module("native_client")
-    async with native.NativeClient(await serve(handler) + "/v1", "a", "admin") as client:
-        with pytest.raises(native.NativeAPIError):
-            await client.login_qr("op-1", 1)
-    assert "Native 登录诊断" not in caplog.text
-    assert "SENSITIVE" not in caplog.text and "not png" not in caplog.text
 
 
 async def test_explicit_qr_retry_bypasses_failed_saved_login(serve, tmp_path, caplog):

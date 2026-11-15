@@ -4,6 +4,7 @@ import asyncio
 
 from astrbot.api import logger
 
+from .adapter import track_send_task
 from .native_client import NativeAPIError, NativeClient
 from .state import clean_sticker_caption
 from .tool_support import context, is_native_event, is_tool_error, result
@@ -187,7 +188,7 @@ async def sync_library(event):
 
 
 async def run_sticker_command(event, *, notify=None):
-    adapter, task, started = None, asyncio.current_task(), False
+    adapter, started = None, False
     try:
         if (
             not is_native_event(event)
@@ -201,14 +202,10 @@ async def run_sticker_command(event, *, notify=None):
         if getattr(adapter, "_sticker_sync_running", False):
             return "表情包正在同步，完成后会自动汇总结果，无需重复发送。"
         adapter._sticker_sync_running = started = True
-        adapter._send_tasks.add(task)
-        if notify is not None:
-            try:
+        async with track_send_task(adapter):
+            if notify is not None:
                 await notify("开始同步表情库并自动下载所有已添加的包，完成后会汇总结果，请稍候。")
-            finally:
-                # Sending the acknowledgement releases the adapter's nested send task.
-                adapter._send_tasks.add(task)
-        return await sync_library(event)
+            return await sync_library(event)
     except Exception as error:
         if is_tool_error(error):
             return "当前暂时无法管理表情库，请检查机器人开关、私聊权限和连接状态。"
@@ -217,4 +214,3 @@ async def run_sticker_command(event, *, notify=None):
     finally:
         if started:
             adapter._sticker_sync_running = False
-            adapter._send_tasks.discard(task)

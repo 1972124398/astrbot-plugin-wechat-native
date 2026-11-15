@@ -7,6 +7,7 @@ import time
 import uuid
 import weakref
 from collections import OrderedDict
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -102,6 +103,20 @@ class RedPacketReplies:
         return self.remaining.pop(index)
 
 
+@asynccontextmanager
+async def track_send_task(adapter):
+    """Keep nested sends registered until the outermost task scope exits."""
+    task = asyncio.current_task()
+    owns_task = task not in adapter._send_tasks
+    if owns_task:
+        adapter._send_tasks.add(task)
+    try:
+        yield
+    finally:
+        if owns_task:
+            adapter._send_tasks.discard(task)
+
+
 @register_platform_adapter(
     ADAPTER_ID,
     "直接连接 agent-wechat-native 的个人微信平台适配器",
@@ -156,13 +171,6 @@ class WeChatNativeAdapter(Platform):
         self._terminate_lock = asyncio.Lock()
         self._last_time_warning = float("-inf")
         self.summary_cache = GroupSummaryCache(cfg.summary_max_messages, cfg.summary_window_minutes)
-        logger.info(
-            "WeChat Native 运行时工具开关："
-            "history_tools=%s wechat_actions=%s admin_token_loaded=%s",
-            cfg.enable_history_tools,
-            cfg.enable_wechat_actions,
-            self.admin_client is not None,
-        )
 
     def meta(self) -> PlatformMetadata:
         return PlatformMetadata(
@@ -965,8 +973,6 @@ class WeChatNativeAdapter(Platform):
         ):
             raise ValueError("message_identity_mismatch")
         origin = data.get("origin", "unknown")
-        if raw.get("type") == 49 and raw.get("appMessageType") == 57:
-            self.stickers.log_quote(raw, "receive")
         received = (
             origin == "live"
             and raw.get("direction") == "incoming"
@@ -1144,9 +1150,7 @@ class WeChatNativeAdapter(Platform):
     ) -> bool:
         if self.stopped:
             raise RuntimeError("WeChat Native 已停止")
-        task = asyncio.current_task()
-        self._send_tasks.add(task)
-        try:
+        async with track_send_task(self):
             async with self.loop_guard.gate(thread):
                 if self.stopped:
                     raise RuntimeError("WeChat Native 已停止")
@@ -1162,8 +1166,6 @@ class WeChatNativeAdapter(Platform):
                     sticker=sticker,
                     sticker_key=sticker_key,
                 )
-        finally:
-            self._send_tasks.discard(task)
 
     async def _send_chain(
         self,
@@ -1178,9 +1180,7 @@ class WeChatNativeAdapter(Platform):
     ) -> bool:
         if self.stopped:
             raise RuntimeError("WeChat Native 已停止")
-        task = asyncio.current_task()
-        self._send_tasks.add(task)
-        try:
+        async with track_send_task(self):
             async with self._send_lock:
                 if self.stopped:
                     raise RuntimeError("WeChat Native 已停止")
@@ -1536,8 +1536,6 @@ class WeChatNativeAdapter(Platform):
                             receipt["id"],
                         )
                 return True
-        finally:
-            self._send_tasks.discard(task)
 
     async def send_by_session(self, session, message_chain):
         thread = session_target(session.session_id, self.native_config.account_id)

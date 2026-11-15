@@ -69,29 +69,6 @@ class StickerService:
     def __init__(self, adapter):
         self.adapter = adapter
 
-    def log_quote(self, raw, stage):
-        quote = raw.get("quote")
-        quote = quote if isinstance(quote, dict) else {}
-        state = quote.get("state")
-        if state not in {"embedded", "missing", "unsupported", "recalled"}:
-            state = "unknown"
-        quote_type = quote.get("type")
-        app_type = quote.get("appMessageType")
-        logger.info(
-            "WeChat Native 引用表情诊断：message=%s stage=%s quote_type=%s "
-            "quote_app_type=%s quote_state=%s embedded_sticker=%s embedded_text=%s "
-            "enable_stickers=%s enable_media=%s",
-            raw.get("id"),
-            stage,
-            quote_type if type(quote_type) is int else None,
-            app_type if type(app_type) is int else None,
-            state,
-            quote.get("embeddedSticker") is True,
-            isinstance(quote.get("embeddedText"), str) and bool(quote["embeddedText"]),
-            self.adapter.native_config.enable_stickers,
-            self.adapter.native_config.enable_media,
-        )
-
     async def _check_original_message(self, raw, original_id):
         adapter = self.adapter
         quote = raw.get("quote")
@@ -656,16 +633,6 @@ class StickerService:
                     diagnostics["native_version"] = version
             except NativeAPIError:
                 pass
-        logger.info(
-            "WeChat Native 表情目录诊断：saved_count=%s added_pack_count=%s saved_ready=%s "
-            "pack_ready=%s candidate_count=%s native_version=%s",
-            diagnostics["saved_count"],
-            diagnostics["added_pack_count"],
-            diagnostics["saved_ready_count"],
-            diagnostics["pack_ready_count"],
-            len(items),
-            diagnostics["native_version"] or "unknown",
-        )
         return items, diagnostics
 
     async def find(self, event, query="", limit=12, *, labeler=None):

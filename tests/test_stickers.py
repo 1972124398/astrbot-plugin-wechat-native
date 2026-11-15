@@ -68,8 +68,6 @@ class Native:
         self.last_kind = "sticker_saved"
         self.content_requests = []
         self.native_version = "2.4.0"
-        self.acquire_polls = 0
-        self.acquire_fault = None
 
     def job(self, kind="sticker_saved", job_id="job1"):
         value = {
@@ -92,27 +90,6 @@ class Native:
                 contentReadiness="available",
                 items=[dict(self.asset, id="pack-original", messageId=None)],
             )
-            if self.acquire_polls:
-                self.acquire_polls -= 1
-                value.update(
-                    state="running", phase="downloading", result={"serverAcceptance": "pending"}
-                )
-            elif self.acquire_fault == "failed":
-                value.update(state="failed", result={"serverAcceptance": "rejected"})
-            else:
-                self.pack_items[0]["original"] = dict(
-                    self.asset, id="pack-original", messageId=None
-                )
-                if self.acquire_fault == "missing_original":
-                    self.pack_items[0]["original"] = None
-                elif self.acquire_fault == "foreign_original":
-                    self.pack_items[0]["original"]["accountId"] = "other"
-                elif self.acquire_fault == "not_gif":
-                    self.pack_items[0]["original"]["contentType"] = "image/png"
-                elif self.acquire_fault == "foreign_job":
-                    value["accountId"] = "other"
-                elif self.acquire_fault == "wrong_pack":
-                    value["result"]["packId"] = "other"
         return value
 
     async def handle(self, req):
@@ -728,7 +705,7 @@ async def test_wechat_text_faces_are_preserved_in_quote_component(serve, tmp_pat
 
 
 async def test_empty_catalog_reports_native_counts_without_claiming_save_failure(
-    serve, tmp_path, caplog
+    serve, tmp_path
 ):
     native, adapter, event = await send_event(serve, tmp_path)
     native.saved, native.packs = [], []
@@ -739,7 +716,6 @@ async def test_empty_catalog_reports_native_counts_without_claiming_save_failure
         assert data["catalog"]["saved_count"] == 0
         assert data["catalog"]["added_pack_count"] == 0
         assert data["catalog"]["native_version"] == "2.4.0"
-        assert "saved_count=0 added_pack_count=0" in caplog.text
         assert not any(c[0] == "POST" for c in native.calls)
     finally:
         await adapter.terminate()

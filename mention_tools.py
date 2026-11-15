@@ -1,11 +1,11 @@
 """Model-requested mentions through the existing current-group send pipeline."""
 
-import asyncio
 import unicodedata
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import At, Plain
 
+from .adapter import track_send_task
 from .native_client import SendError
 from .tool_support import ToolError, context, encode, error_result, result
 
@@ -13,7 +13,7 @@ RESULT_KEY = "wechat_native_mention_result"
 
 
 async def run_mention(event, username, text):
-    action, adapter, task = "mention_member", None, asyncio.current_task()
+    action = "mention_member"
     try:
         ctx = context(event, group=True, send=True)
         if (
@@ -28,8 +28,7 @@ async def run_mention(event, username, text):
         ):
             raise ToolError("invalid_request")
         adapter = ctx.adapter
-        adapter._send_tasks.add(task)
-        async with adapter.loop_guard.gate(ctx.thread):
+        async with track_send_task(adapter), adapter.loop_guard.gate(ctx.thread):
             ctx = context(event, group=True, send=True)
             previous = event.get_extra(RESULT_KEY)
             if previous:
@@ -55,6 +54,3 @@ async def run_mention(event, username, text):
             return encode(value)
     except Exception as error:
         return encode(error_result(action, error))
-    finally:
-        if adapter:
-            adapter._send_tasks.discard(task)

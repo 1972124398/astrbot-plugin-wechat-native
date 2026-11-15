@@ -220,31 +220,31 @@ def serialize_chain(
     return parts, mentions, reply_id
 
 
-def serialize_text(chain: MessageChain, *, group: bool) -> tuple[str, dict | None, str | None]:
-    parts, mentions, reply_id = serialize_chain(chain, group=group)
-    if any(not isinstance(part, str) for part in parts):
-        raise ValueError("媒体消息需要通过 send_chain 发送")
-    return "".join(parts), mentions, reply_id
-
-
 class WeChatNativeEvent(AstrMessageEvent):
     def __init__(self, message, adapter):
         super().__init__(message.message_str, message, adapter.meta(), message.session_id)
         self.adapter = adapter
 
-    def _sticker_send_state(self) -> str | None:
+    def should_suppress_sticker_followup(self) -> bool:
+        if self.get_extra("wechat_native_sticker_suppress_followup"):
+            return True
         raw = (
             self.message_obj.raw_message if isinstance(self.message_obj.raw_message, dict) else None
         )
         if not raw or not isinstance(raw.get("threadId"), str) or self.adapter._state_closed:
-            return None
+            return False
         sticker = self.adapter.state.sticker_operation(
             self.adapter.native_config.account_id,
             raw["threadId"],
             self.message_obj.message_id,
             "send",
         )
-        return sticker["state"] if sticker else None
+        return sticker is not None and sticker["state"] in {
+            "success",
+            "submitting",
+            "pending",
+            "needs_review",
+        }
 
     async def send(self, message: MessageChain) -> None:
         if self.adapter.stopped:
@@ -265,9 +265,7 @@ class WeChatNativeEvent(AstrMessageEvent):
         if status == "recalled":
             self.stop_event()
             return
-        if self.get_extra(
-            "wechat_native_sticker_suppress_followup"
-        ) or self._sticker_send_state() in {"success", "submitting", "pending", "needs_review"}:
+        if self.should_suppress_sticker_followup():
             self.stop_event()
             return
         if status in {"needs_review", "failed", "partial"}:

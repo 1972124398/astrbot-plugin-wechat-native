@@ -1073,14 +1073,6 @@ class NativeClient:
             "GET", self.prefix + "/sticker-packs/" + quote(pack_id, safe="") + "/stickers"
         )
 
-    async def download_sticker(self, pack_id, sticker_id, key):
-        return await self._request(
-            "POST",
-            self.prefix + "/sticker-downloads",
-            json={"packId": pack_id, "stickerId": sticker_id},
-            headers={"Idempotency-Key": key},
-        )
-
     async def download_sticker_pack(self, pack_id, key):
         return await self._request(
             "POST",
@@ -1316,13 +1308,6 @@ class NativeClient:
         is_wxgf = (
             asset.get("contentType") == "image/x-wxgf"
             or str(asset.get("format", "")).lower() == "wxgf"
-        )
-        logger.info(
-            "WeChat Native 下载图片资产：message=%s asset=%s variant=%s preview=%s",
-            asset.get("messageId"),
-            asset["id"],
-            _effective_variant(asset),
-            is_wxgf,
         )
         if is_wxgf:
             preview = asset.get("preview")

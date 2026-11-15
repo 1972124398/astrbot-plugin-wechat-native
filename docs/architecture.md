@@ -15,6 +15,8 @@
 * **外部边车守护进程**。`NativeClient`（[`native_client.py`](../native_client.py)）访问 `agent-wechat-native` 提供的 REST 与 SSE 接口。所有请求禁用 HTTP 重定向与系统环境变量代理，剥离响应体细节，仅将错误码映射至固定白名单 `_SAFE_CODES`。
 * **无正文事务日志**。`StateStore`（[`state.py`](../state.py)）管理开启 `WAL` 和 `synchronous=FULL` 的 SQLite 数据库，文件权限设为 `0o600`。它仅存储单调递增的 SSE 游标 `checkpoint`、服务端身份 `settings['server_id']`、消息状态表 `messages`、撤回墓碑表 `recalls` 和发送回执表 `sends`。
 * **双身份隔离**。AstrBot 的 `PlatformManager` 占用 `self.client_self_id` 存储平台实例任务 UUID。`WeChatNativeAdapter.__init__`（[`adapter.py`](../adapter.py)）将微信账号的真实身份单独保存在 `self.bot_self_id` 中，并在 `WeChatNativeAdapter.run` 连接成功后更新为 `ownUsername`。
+* **任务生命周期归属**。`adapter.py` 的 `track_send_task` 统一登记发送、表情同步、显式 @ 和排行任务。同一任务嵌套进入发送管线时，仅由最外层调用注销，保证工具流程在消息提交后进行的回执检查及 AstrBot 发送钩子仍受停机取消管理；功能模块不再直接修改 `_send_tasks`。
+* **表情后续回复规则**。`WeChatNativeEvent.should_suppress_sticker_followup` 统一检查事件标记及表情发送状态。模型结果装饰和事件发送复用该判断，避免已发送或结果未知的表情触发额外文本、语音回复；明确失败时仍允许失败说明。
 * **发送前二次核验**。在大模型生成回复期间，原消息或被引用消息可能已被撤回。`WeChatNativeAdapter.send_chain` 在发起发送请求前，会重新向 Native 服务端拉取源消息与引用目标消息，并复核内存摘要缓存，防止针对已撤回内容发出回复。
 * **幂等键与只读轮询**。每次外发消息在 `send_chain` 中生成唯一 `astrbot-<uuid4>` 幂等键并写入 `sends` 表。若 `NativeClient.send_text` 遇到超时、断连、`408`、`429` 或 `5xx`，客户端不再重复提交 `POST`，而是通过 `/sends/by-idempotency-key` 查询回执并轮询 `/sends/{send_id}` 直到状态变为 `accepted`。
 
@@ -42,7 +44,7 @@
 
 当大模型或指令生成回复并调用 `WeChatNativeEvent.send` 时，调用进入 `WeChatNativeAdapter.send_chain` 并在 `self._send_lock` 互斥锁下串行执行：
 
-1. **组件序列化与自动 `@`**。`serialize_text` 提取 `Plain`、`At`、`AtAll` 和 `Reply` 组件，拒绝任何图片或非文本组件，同时校验普通文本不超过 64 KiB、引用回复不超过 16 KiB。若在群聊中回复首段消息且未显式指定 `@`，`send_chain` 会自动将发送者 ID 填入 `mentions`。
+1. **组件序列化与自动 `@`**。`serialize_chain` 按顺序保留文本、图片和语音，提取 `At`、`AtAll` 和 `Reply` 元数据，由首个文本片段承载；不支持的组件直接拒绝。发送时校验普通文本不超过 64 KiB、引用回复不超过 16 KiB。若在群聊中回复首段文本且未显式指定 `@`，`send_chain` 会根据配置自动将发送者 ID 填入 `mentions`。
 2. **群成员元数据预热**。若包含 `@` 列表，调用 `client.prepare_group_mentions` 检查 `/groups/{thread}/members/{username}`。一旦发现目标成员缺失或处于 `unconfirmed` 状态，立即触发 `POST .../members/refresh` 并轮询 `/operations/{op_id}` 直至成功。若是自动 `@` 触发了 `GroupMembersUnavailable`，且非认证或身份错误，`send_chain` 会降级省略 `@` 并继续发送正文。若是显式 `@` 则直接报错终止。
 3. **发送边界二次核验**。`send_chain` 再次调用 `client.message` 拉取源消息与引用目标消息的最新状态，验证两者均未被撤回且身份匹配。若当前事件是由 `summarize_group` 触发的 `/总结群聊` 指令，还会检查 `wechat_native_summary_records` 中的快照记录是否仍完整存在于 `summary_cache.contains` 中。
 4. **落库、发送与回执确认**。核验通过后，调用 `state.begin_send` 记录 `submitting` 状态，再调用 `client.send_text` 提交并等待回执变为 `accepted`，最后通过 `state.finish_send` 和 `state.mark_message` 将状态更新为 `replied`。
@@ -91,7 +93,7 @@ sequenceDiagram
 * [`config.py`](../config.py) 定义不可变数据类 `NativeConfig`，负责校验 URL 格式、图片识别开关 `enable_media`、白名单列表、摘要参数范围以及从磁盘加载 Token。
 * [`native_client.py`](../native_client.py) 定义 `NativeClient`、`NativeAPIError`、`MediaError`、`SendError`、`GroupMembersUnavailable` 与 `validate_image_bytes`，封装针对 `agent-wechat-native` 的网络交互、媒体下载与错误脱敏。
 * [`state.py`](../state.py) 定义 `StateStore` 与 `StateIdentityError`，管理游标推进、撤回墓碑、崩溃恢复状态转移和发送回执记录。
-* [`event.py`](../event.py) 定义 `convert_message`、`serialize_text`、`session_id`、`session_target` 以及重写了 `send` 和 `send_streaming` 的 `WeChatNativeEvent`。
+* [`event.py`](../event.py) 定义 `convert_message`、`serialize_chain`、`session_id`、`session_target` 以及重写了 `send` 和 `send_streaming` 的 `WeChatNativeEvent`。
 * [`summary.py`](../summary.py) 定义 `GroupSummaryCache`、`SummaryMessage` 与 `summary_prompt`，在内存中按时间窗口和条数上限维护可撤回的群文本快照。
 * [`connection_view.py`](../connection_view.py) 与前端静态资源 [`views/connection/app.js`](../views/connection/app.js) 提供管理后台的只读连通性测试面板。
 
@@ -102,4 +104,4 @@ sequenceDiagram
 * **微信 `@` 标签的专用分隔符是 `U+2005`**。微信客户端生成的真实 `@昵称` 后方紧跟四分之一空格 `\u2005`，而非普通 ASCII 空格。`convert_message` 仅在 `mentions.self is True` 时按 `\u2005` 剥离前缀，普通手打的 `@名字 ` 不会被当成元数据剥离。
 * **多段发送的部分失败锁定**。如果一次回复包含多次 `send` 调用，当第一段成功变为 `replied` 而后续分段失败时，`StateStore.mark_message` 会将消息状态锁定为不可逆的 `partial`。一旦进入 `needs_review`、`failed` 或 `partial` 状态，后续任何针对该消息的 `send_chain` 调用都会抛出 `RuntimeError` 拒绝重发。
 * **流式输出被降级为单次拼接发送**。个人微信不支持流式编辑。`WeChatNativeEvent.send_streaming` 会消费完整个异步生成器，将所有分段拼接为一个完整 `MessageChain` 后调用一次 `self.send(chain)`。
-* **入站支持图片识别，出站仍仅支持纯文本与引用文本**。`_classify` 支持私聊直接图片、私聊引用图片及群聊 `@` 机器人的引用图片识别，细节见 [图片识别实现说明](image-recognition.md)。出站 `serialize_text` 遇到非文本组件仍会直接抛出 `ValueError`，需保持机器人的文本转图片功能关闭。
+* **媒体发送也必须经过现有发送管线**。`serialize_chain` 支持文本、图片和语音混合顺序，图片和语音经校验后通过 `send_chain` 提交并核对回执。纯媒体片段不能直接承载引用或 `@`，需要文本片段承载这些元数据。不支持的组件仍会抛出 `ValueError`，普通文件发送不在支持范围内。
