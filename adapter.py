@@ -1529,12 +1529,6 @@ class WeChatNativeAdapter(Platform):
                     )
                     if message_id:
                         self.state.mark_message(message_id, "replied")
-                    if not red_packet:
-                        logger.info(
-                            "WeChat Native 回复已被 Native 接受：message=%s send=%s",
-                            message_id,
-                            receipt["id"],
-                        )
                 return True
 
     async def send_by_session(self, session, message_chain):
