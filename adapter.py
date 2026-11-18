@@ -46,6 +46,7 @@ from .event import (
     session_target,
     sticker_preview,
 )
+from .friend_requests import FriendRequests
 from .history_tools import HistoryTools
 from .loop_guard import LoopGuard
 from .native_client import (
@@ -143,9 +144,15 @@ class WeChatNativeAdapter(Platform):
         cfg = self.native_config
         self.client = NativeClient(cfg.api_url, cfg.account_id, cfg.load_token())
         self.admin_client = None
-        if cfg.enable_wechat_actions and cfg.admin_token_file:
-            admin_token = replace(cfg, token="", token_file=cfg.admin_token_file).load_token()
-            self.admin_client = NativeClient(cfg.api_url, cfg.account_id, admin_token)
+        if (cfg.enable_wechat_actions or cfg.enable_friend_requests) and cfg.admin_token_file:
+            try:
+                admin_token = replace(cfg, token="", token_file=cfg.admin_token_file).load_token()
+            except ValueError:
+                if not cfg.enable_friend_requests:
+                    raise
+                logger.warning("WeChat Native 管理 Token 不可用，好友申请写操作暂不可用")
+            else:
+                self.admin_client = NativeClient(cfg.api_url, cfg.account_id, admin_token)
         # PlatformManager owns client_self_id (its instance/task UUID).
         self.bot_self_id = cfg.account_id
         root = state_dir if state_dir is not None else StarTools.get_data_dir(PLUGIN_ID)
@@ -167,6 +174,7 @@ class WeChatNativeAdapter(Platform):
         self.loop_guard = LoopGuard(self.state, cfg.account_id)
         self.history = HistoryTools(self)
         self.actions = WeChatActions(self)
+        self.friend_requests = FriendRequests(self)
         self.stickers = StickerService(self)
         self._terminate_lock = asyncio.Lock()
         self._last_time_warning = float("-inf")
@@ -948,6 +956,8 @@ class WeChatNativeAdapter(Platform):
                         media_task.cancel()
             self.state.advance(cursor)
             return
+        if event["kind"] == "friend_request.updated" and self.native_config.enable_friend_requests:
+            await self.friend_requests.notify(event)
         if event["kind"] != "message.committed":
             self.state.advance(cursor)
             return
@@ -1123,6 +1133,11 @@ class WeChatNativeAdapter(Platform):
                             error.status,
                             error.code,
                         )
+                        if (
+                            error.code == "event_cursor_expired"
+                            and self.native_config.enable_friend_requests
+                        ):
+                            await self.friend_requests.cursor_expired()
                         raise
                     logger.warning("WeChat Native 暂时不可达，将重连（HTTP %s）", error.status)
                 except ValueError:

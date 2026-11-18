@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.20 — 2026-11-18
+
+- Add opt-in friend management for Native v2.7.1. AstrBot administrators can search by WeChat ID, send requests, list pending incoming requests and accept a selected request in WeChat Native private chat.
+- Reuse the read credential for search and listing. Send and accept with the account's Admin Token and durable idempotency keys. Report friendship only after Native confirms it.
+- Add `/订阅好友`, `/好友订阅状态` and `/取消订阅好友` with English aliases. Route new requests to the bound administrator private chat through the existing SSE stream. Skip existing requests at subscription time and deduplicate notification attempts across restarts.
+- Filter friend tool schemas from ineligible main-agent requests. AstrBot 4.29.3 subagents configured to load all tools may still receive those schemas. The plugin checks administrator and private-chat permissions at execution.
+
 ## 0.3.19 — 2026-11-15
 
 - Centralize nested send/tool task ownership so shutdown cancels mention-tool post-send hooks and sticker sync polling without manual task re-registration.

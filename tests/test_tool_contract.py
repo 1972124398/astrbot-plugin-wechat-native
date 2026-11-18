@@ -17,6 +17,10 @@ TOOLS = {
     "wechat_mention_member": {"username", "text"},
     "wechat_find_stickers": {"query", "limit"},
     "wechat_send_sticker": {"selection_id"},
+    "wechat_search_contact": {"query"},
+    "wechat_send_friend_request": {"recipient_ref", "message"},
+    "wechat_list_friend_requests": {"search"},
+    "wechat_accept_friend_request": {"request_id"},
 }
 
 

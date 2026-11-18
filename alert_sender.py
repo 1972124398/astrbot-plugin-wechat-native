@@ -44,6 +44,27 @@ class AlertSender:
                 f"🔔 WeChat Native 通知测试\n机器人：{bot_id}\n"
                 "这是一条测试消息，不代表连接出现故障。"
             )
+        return await self._send_text(binding, text)
+
+    async def send_friend(self, binding, request):
+        lines = ["📩 收到新的微信好友申请"]
+        if name := request.get("displayName"):
+            lines.append(f"申请人：{name}")
+        if message := request.get("message"):
+            lines.append(f"验证消息：{message}")
+        lines.extend(("", "可以私聊微信机器人说：", "“查看好友申请”"))
+        if name:
+            lines.append(f"“通过{name}的申请”")
+        return await self._send_text(binding, "\n".join(lines))
+
+    async def send_event_cursor_expired(self, binding, bot_id):
+        return await self._send_text(
+            binding,
+            f"⚠️ WeChat Native {bot_id} 的事件游标已过期，已保留游标并停止接收。"
+            "请检查 Native 事件保留历史与插件日志。",
+        )
+
+    async def _send_text(self, binding, text):
         try:
             if not enabled_platform(self.context, binding["platform_id"], binding["platform_type"]):
                 logger.warning("Native 通知目标平台不可用，跳过发送")

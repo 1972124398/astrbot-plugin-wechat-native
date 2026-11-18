@@ -14,6 +14,38 @@ Native v2.3.0 账号未认证时，打开插件的 **WeChat Native 面板**，�
 英文等价命令为 `/bind_alert`、`/test_alert`、`/alert_status`、`/unbind_alert`。
 每次事故最多尝试一次断线和一次恢复通知；平台调用成功不等于实际送达。
 
+## 微信好友管理（Native v2.7.1）
+
+在目标机器人的配置中开启 `enable_friend_requests`（默认关闭），并使用 Native v2.7.1。
+搜索、查询及订阅使用现有的 `read` 凭据；发送和接受使用 `admin_token_file` 中对该账号有
+`admin` 权限的凭据。AstrBot 4.29.3 的请求钩子只在已启用功能的 WeChat Native 管理员私聊保留以下工具的 Schema。
+
+| AI 工具 | 用法 |
+| --- | --- |
+| `wechat_search_contact` | 按确切微信号搜索，返回显示名称、好友关系及可用的短时 `recipientRef` |
+| `wechat_send_friend_request` | 管理员明确指定要添加的人后，使用同一账号的搜索引用提交，可附验证消息 |
+| `wechat_list_friend_requests` | 查询待处理的收到的好友申请，可按姓名筛选。遍历 Native 分页，最多展示 12 条 |
+| `wechat_accept_friend_request` | 按查询得到的申请 ID 接受，提交前获取当前版本。同名多条时需指定其中一条 |
+
+例如在微信机器人私聊说“搜索微信号 alice123 并给她发送好友申请，验证消息写‘我是小李’”，
+或说“查看待处理好友申请”“通过张三的申请”。搜索只读取资料。引用过期时请按微信号重新搜索。
+若申请版本已变化，请重新查询。发送与接受使用幂等键，结果不明时只检查原 Operation。
+收到“申请确认已提交”后请等待微信同步，好友关系确认后才会报告添加成功。
+
+在 Telegram、QQ、LINE、`weixin_oc` 或 WeChat Native 的 AstrBot 管理员私聊中执行：
+
+| 指令 | 用途 |
+| --- | --- |
+| `/订阅好友 [native_bot_id]` 或 `/friend_subscribe [native_bot_id]` | 将新申请通知发到当前私聊 |
+| `/好友订阅状态 [native_bot_id]` 或 `/friend_status [native_bot_id]` | 查询当前订阅渠道 |
+| `/取消订阅好友 [native_bot_id]` 或 `/friend_unsubscribe [native_bot_id]` | 取消好友申请通知 |
+
+只有一个启用的 Native 机器人时可省略 ID。有多个时，请按指令提示指定机器人 ID。
+重复订阅会更新目标，每个机器人保留一个目标。好友订阅独立于断线通知，使用现有 SSE，
+订阅指令和通知均无需模型。首次订阅时已有的申请不补发。同一申请最多尝试发送一次，
+尝试记录和订阅在重启后保留。收到游标过期告警时，请检查 Native 事件保留历史与插件日志，
+插件会保留原游标并停止接收。通知依赖接收平台的主动消息权限及有效会话。
+
 ## 支持发送图片
 
 表情应使用下面的[原生表情工具](#原生表情native-v240)，不会降级为普通图片发送。

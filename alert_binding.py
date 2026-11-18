@@ -9,7 +9,9 @@ from astrbot.core.platform.message_session import MessageSession
 from astrbot.core.platform.message_type import MessageType
 
 from .alert_sender import AlertSender, enabled_platform
-from .connection_probe import saved_robots
+from .config import ADAPTER_ID
+from .connection_probe import identity_hash, saved_robots
+from .state import cursor_number
 
 
 class BindingError(Exception):
@@ -54,6 +56,66 @@ class AlertBindingService:
             logger.warning("Native 通知绑定记录无效，已跳过")
             return None
         return value
+
+    def friend_lock(self, bot_id):
+        return self._locks.setdefault(("friend", bot_id), asyncio.Lock())
+
+    async def get_friend(self, adapter):
+        binding = await self.kv.get_kv_data(f"friend_request_binding:{adapter.meta().id}", None)
+        if not valid_binding(binding) or binding.get("identity") != identity_hash(
+            adapter.native_config
+        ):
+            return None
+        try:
+            cursor_number(binding.get("baseline_cursor"))
+        except ValueError:
+            return None
+        return binding
+
+    async def execute_friend(self, action, event, bot_id=""):
+        try:
+            incoming = self._trusted_binding(event)
+            if not isinstance(bot_id, str) or any(c.isspace() for c in bot_id):
+                raise BindingError("只接受一个 Native 机器人 ID 参数")
+            bot = self._target(bot_id)
+            bot_id = bot["id"]
+            key = f"friend_request_binding:{bot_id}"
+            async with self.friend_lock(bot_id):
+                if action == "unsubscribe":
+                    await self.kv.delete_kv_data(key)
+                    return f"✅ 已取消订阅 {bot_id} 的好友申请。"
+                adapter = self.context.get_platform_inst(bot_id)
+                if bot.get("enable_friend_requests") is not True:
+                    raise BindingError(f"{bot_id} 的好友申请功能尚未启用。")
+                if (
+                    adapter is None
+                    or adapter.meta().name != ADAPTER_ID
+                    or not adapter.native_config.enable_friend_requests
+                ):
+                    raise BindingError(f"{bot_id} 的好友申请服务尚未就绪。")
+                binding = await self.get_friend(adapter)
+                if action == "status":
+                    channel = binding["platform_type"] if binding else "未订阅"
+                    return f"机器人：{bot_id}；好友申请通知：{channel}。"
+                baseline = (
+                    binding["baseline_cursor"]
+                    if binding
+                    else await adapter.friend_requests.baseline()
+                )
+                await self.kv.put_kv_data(
+                    key,
+                    dict(
+                        incoming,
+                        identity=identity_hash(adapter.native_config),
+                        baseline_cursor=baseline,
+                    ),
+                )
+                return f"✅ 已订阅 {bot_id} 的新好友申请，通知将发送到当前私聊。"
+        except BindingError as error:
+            return str(error)
+        except Exception:
+            logger.warning("WeChat Native 好友申请订阅处理失败")
+            return "好友申请订阅操作失败，请检查 Native 连接与持久化后重试。"
 
     def _target(self, bot_id):
         bots = saved_robots(self.context, enabled_only=True)

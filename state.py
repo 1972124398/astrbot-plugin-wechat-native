@@ -120,6 +120,12 @@ class StateStore:
                 PRIMARY KEY(account, thread, trigger));
             CREATE TABLE IF NOT EXISTS recalls (
                 thread TEXT NOT NULL, server_id TEXT NOT NULL, PRIMARY KEY(thread, server_id));
+            CREATE TABLE IF NOT EXISTS friend_operations (
+                action TEXT NOT NULL, target_hash TEXT NOT NULL, revision_hash TEXT NOT NULL,
+                key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, operation_id TEXT,
+                PRIMARY KEY(action, target_hash));
+            CREATE TABLE IF NOT EXISTS friend_notifications (
+                request_hash TEXT PRIMARY KEY, status TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS messages (
                 id TEXT PRIMARY KEY, thread TEXT NOT NULL, server_id TEXT, status TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS message_days (
@@ -181,6 +187,65 @@ class StateStore:
                 "ELSE 'needs_review' END WHERE status IN ('replied','no_reply') "
                 "AND EXISTS (SELECT 1 FROM sends WHERE sends.message_id=messages.id "
                 "AND sends.state!='accepted')"
+            )
+
+    def friend_operation(self, action, target_hash):
+        return self.db.execute(
+            "SELECT * FROM friend_operations WHERE action=? AND target_hash=?",
+            (action, target_hash),
+        ).fetchone()
+
+    def start_friend_operation(self, action, target_hash, revision_hash, key, previous_key):
+        with self.db:
+            return (
+                self.db.execute(
+                    "INSERT INTO friend_operations VALUES (?, ?, ?, ?, 'submitting', NULL) "
+                    "ON CONFLICT(action, target_hash) DO UPDATE SET "
+                    "revision_hash=excluded.revision_hash, key=excluded.key, "
+                    "status='submitting', operation_id=NULL WHERE friend_operations.key=?",
+                    (action, target_hash, revision_hash, key, previous_key),
+                ).rowcount
+                == 1
+            )
+
+    def finish_friend_operation(self, key, status, operation_id=None):
+        with self.db:
+            self.db.execute(
+                "UPDATE friend_operations SET status=?, operation_id=COALESCE(?, operation_id) "
+                "WHERE key=?",
+                (status, operation_id, key),
+            )
+
+    def save_friend_baseline(self, request_hashes):
+        with self.db:
+            self.db.executemany(
+                "INSERT OR IGNORE INTO friend_notifications VALUES (?, 'baseline')",
+                ((request_hash,) for request_hash in request_hashes),
+            )
+
+    def has_friend_notification(self, request_hash):
+        return (
+            self.db.execute(
+                "SELECT 1 FROM friend_notifications WHERE request_hash=?", (request_hash,)
+            ).fetchone()
+            is not None
+        )
+
+    def claim_friend_notification(self, request_hash):
+        with self.db:
+            return (
+                self.db.execute(
+                    "INSERT OR IGNORE INTO friend_notifications VALUES (?, 'attempted')",
+                    (request_hash,),
+                ).rowcount
+                == 1
+            )
+
+    def finish_friend_notification(self, request_hash, status):
+        with self.db:
+            self.db.execute(
+                "UPDATE friend_notifications SET status=? WHERE request_hash=?",
+                (status, request_hash),
             )
 
     def cooldown(self, account: str, thread: str) -> float:

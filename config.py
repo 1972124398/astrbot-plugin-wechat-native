@@ -45,6 +45,7 @@ DEFAULT_CONFIG = {
     "enable_group_summary": False,
     "enable_history_tools": False,
     "enable_wechat_actions": False,
+    "enable_friend_requests": False,
     "wechat_action_admins": [],
     "admin_token_file": "/run/secrets/wechat-admin-token",
     "summary_max_messages": 200,
@@ -52,6 +53,11 @@ DEFAULT_CONFIG = {
 }
 
 CONFIG_METADATA = {
+    "enable_friend_requests": {
+        "type": "bool",
+        "description": "启用微信好友管理与好友申请通知",
+        "hint": "需要 Native v2.7.1；发送和接受申请另需管理 Token。",
+    },
     "enable_stickers": {
         "type": "bool",
         "description": "启用原生表情读取、查找与发送",
@@ -79,12 +85,12 @@ CONFIG_METADATA = {
     },
     "admin_token_file": {
         "type": "string",
-        "description": "扫码登录与群管理 admin Token 文件路径",
+        "description": "扫码登录、群管理与好友管理 admin Token 文件路径",
         "hint": (
             "默认 /run/secrets/wechat-admin-token；"
             "将宿主机 admin-token 文件只读挂载到此容器内路径，"
             "文件内容须为 Native 签发、具有目标账号 admin 权限的独立 Token。"
-            "仅面板扫码登录或微信修改与撤回工具使用，此处填写文件路径而非 Token 文本。"
+            "此处填写文件路径而非 Token 文本。"
         ),
     },
     "enable_history_tools": {
@@ -207,6 +213,7 @@ class NativeConfig:
     enable_group_summary: bool = False
     enable_history_tools: bool = False
     enable_wechat_actions: bool = False
+    enable_friend_requests: bool = False
     wechat_action_admins: frozenset[str] = frozenset()
     admin_token_file: str = field(default="", repr=False)
     summary_max_messages: int = 200
@@ -247,6 +254,7 @@ class NativeConfig:
             "enable_group_summary",
             "enable_history_tools",
             "enable_wechat_actions",
+            "enable_friend_requests",
         ):
             if key in data and not isinstance(data[key], bool):
                 raise ValueError(f"{key} 必须是布尔值")
@@ -280,6 +288,7 @@ class NativeConfig:
             enable_group_summary=data.get("enable_group_summary", False),
             enable_history_tools=data.get("enable_history_tools", False),
             enable_wechat_actions=data.get("enable_wechat_actions", False),
+            enable_friend_requests=data.get("enable_friend_requests", False),
             admin_token_file=data.get("admin_token_file", ""),
             summary_max_messages=data.get("summary_max_messages", 200),
             summary_window_minutes=data.get("summary_window_minutes", 60),

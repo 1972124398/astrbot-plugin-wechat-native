@@ -11,7 +11,7 @@ Prefer simple, direct solutions. Do not over-engineer.
 
 ## Architecture and Ownership
 
-This is an in-process AstrBot platform adapter, loaded as a Python package. The external `agent-wechat-native` daemon owns the WeChat protocol and login state; this plugin uses its `/v1` HTTP/SSE API. Keep package-relative imports and use AstrBot's existing lifecycle, provider, Plugin KV, and message APIs.
+This is an in-process AstrBot platform adapter, loaded as a Python package. The external `agent-wechat-native` v2.7.1 daemon owns the WeChat protocol and login state. This plugin uses its `/v1` HTTP/SSE API. Keep package-relative imports and use AstrBot's existing lifecycle, provider, Plugin KV, and message APIs.
 
 Read the relevant modules before changing behavior:
 

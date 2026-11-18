@@ -40,6 +40,12 @@ _SAFE_CODES = {
     "unauthorized",
     "forbidden",
     "not_found",
+    "contact_discovery_rejected",
+    "contact_request_not_found",
+    "contact_request_not_actionable",
+    "invalid_recipient_reference",
+    "stale_recipient_reference",
+    "stale_contact_request",
     "timeout",
     "account_not_found",
     "insufficient_scope",
@@ -973,6 +979,43 @@ class NativeClient:
     async def group_mutation_by_key(self, key: str):
         return await self._request(
             "GET", self.prefix + "/group-mutations/by-idempotency-key", params={"key": key}
+        )
+
+    async def search_contact(self, query: str):
+        return await self._request("POST", self.prefix + "/search/contacts", json={"query": query})
+
+    async def contact_requests(self, *, cursor="", search=""):
+        params = {"direction": "incoming", "actionable": "true", "limit": "100"}
+        if cursor:
+            params["cursor"] = cursor
+        if search:
+            params["search"] = search
+        return await self._request("GET", self.prefix + "/contact-requests", params=params)
+
+    async def contact_request(self, request_id: str):
+        return await self._request(
+            "GET", self.prefix + "/contact-requests/" + quote(request_id, safe="")
+        )
+
+    async def send_contact_request(self, recipient_ref: str, message: str, key: str):
+        return await self._request(
+            "POST",
+            self.prefix + "/contact-requests",
+            json={"recipientRef": recipient_ref, "message": message},
+            headers={"Idempotency-Key": key},
+        )
+
+    async def accept_contact_request(self, request_id: str, version: str, key: str):
+        return await self._request(
+            "POST",
+            self.prefix + "/contact-requests/" + quote(request_id, safe="") + "/accept",
+            json={"expectedVersion": version},
+            headers={"Idempotency-Key": key},
+        )
+
+    async def contact_mutation_by_key(self, key: str):
+        return await self._request(
+            "GET", self.prefix + "/contact-mutations/by-idempotency-key", params={"key": key}
         )
 
     async def media_assets(self, message_id: str) -> dict:

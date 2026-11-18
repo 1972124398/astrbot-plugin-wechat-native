@@ -183,7 +183,16 @@ def is_native_event(event):
     ) or _is_owned_reloaded_native_event(event, adapter, WeChatNativeAdapter)
 
 
-def context(event, *, write=False, group=False, send=False, stickers=False, sticker_recovery=False):
+def context(
+    event,
+    *,
+    write=False,
+    group=False,
+    send=False,
+    stickers=False,
+    sticker_recovery=False,
+    friends=False,
+):
     adapter = getattr(event, "adapter", None)
     if not is_native_event(event):
         if not isinstance(event, WeChatNativeEvent):
@@ -207,7 +216,17 @@ def context(event, *, write=False, group=False, send=False, stickers=False, stic
         raise ToolError("not_available", "adapter_stopped")
     if adapter.client.closed:
         raise ToolError("not_available", "native_client_closed")
-    if not send and not stickers and not enabled:
+    if friends:
+        if not cfg.enable_friend_requests:
+            raise ToolError("not_available", "friend_requests_disabled")
+        if (
+            adapter._events.get(event.message_obj.message_id) is not event
+            or adapter.client.account_id != cfg.account_id
+            or event.is_admin() is not True
+            or event.is_private_chat() is not True
+        ):
+            raise ToolError("permission_denied")
+    if not send and not stickers and not friends and not enabled:
         raise ToolError(
             "not_available", "wechat_actions_disabled" if write else "history_tools_disabled"
         )
@@ -249,6 +268,8 @@ def context(event, *, write=False, group=False, send=False, stickers=False, stic
     if adapter.loop_guard.blocked(thread):
         raise ToolError("not_available", "loop_cooldown")
     is_group = thread.endswith("@chatroom")
+    if friends and is_group:
+        raise ToolError("permission_denied")
     if group and not is_group:
         raise ToolError("not_in_group_chat")
     if is_group:
