@@ -984,6 +984,14 @@ class NativeClient:
     async def search_contact(self, query: str):
         return await self._request("POST", self.prefix + "/search/contacts", json={"query": query})
 
+    async def contacts(self, *, limit, relation, search="", cursor=""):
+        params = {"limit": str(limit), "relation": relation}
+        if search:
+            params["search"] = search
+        if cursor:
+            params["cursor"] = cursor
+        return await self._request("GET", self.prefix + "/contacts", params=params)
+
     async def contact_requests(self, *, cursor="", search=""):
         params = {"direction": "incoming", "actionable": "true", "limit": "100"}
         if cursor:

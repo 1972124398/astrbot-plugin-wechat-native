@@ -18,11 +18,12 @@ Native v2.3.0 账号未认证时，打开插件的 **WeChat Native 面板**，�
 
 在目标机器人的配置中开启 `enable_friend_requests`（默认关闭），并使用 Native v2.7.1。
 搜索、查询及订阅使用现有的 `read` 凭据；发送和接受使用 `admin_token_file` 中对该账号有
-`admin` 权限的凭据。AstrBot 4.29.3 的请求钩子只在已启用功能的 WeChat Native 管理员私聊保留以下工具的 Schema。
+`admin` 权限的凭据。AstrBot 4.29.3 的主 Agent 请求钩子只在已启用功能的 WeChat Native 管理员私聊保留以下工具的 Schema。
 
 | AI 工具 | 用法 |
 | --- | --- |
 | `wechat_search_contact` | 按确切微信号搜索，返回显示名称、好友关系及可用的短时 `recipientRef` |
+| `wechat_list_contacts` | 每页查询最多 12 条本地联系人。默认只看已确认的好友，也支持 `all`、`non_contact`、`unknown` |
 | `wechat_send_friend_request` | 管理员明确指定要添加的人后，使用同一账号的搜索引用提交，可附验证消息 |
 | `wechat_list_friend_requests` | 查询待处理的收到的好友申请，可按姓名筛选。遍历 Native 分页，最多展示 12 条 |
 | `wechat_accept_friend_request` | 按查询得到的申请 ID 接受，提交前获取当前版本。同名多条时需指定其中一条 |
@@ -31,6 +32,9 @@ Native v2.3.0 账号未认证时，打开插件的 **WeChat Native 面板**，�
 或说“查看待处理好友申请”“通过张三的申请”。搜索只读取资料。引用过期时请按微信号重新搜索。
 若申请版本已变化，请重新查询。发送与接受使用幂等键，结果不明时只检查原 Operation。
 收到“申请确认已提交”后请等待微信同步，好友关系确认后才会报告添加成功。
+可以在私聊说“按微信号 alice123 查通讯录，确认是否已经是好友”。
+联系人身份匹配且 `relation=friend` 表示本地已经确认好友关系。按 `nextCursor` 继续查询后续页面。
+查询为空时，可能仍在等待同步。
 
 在 Telegram、QQ、LINE、`weixin_oc` 或 WeChat Native 的 AstrBot 管理员私聊中执行：
 

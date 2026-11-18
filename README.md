@@ -65,7 +65,7 @@ QQ、LINE 等平台可能限制主动消息；首次使用请运行 `/测试通�
 ### 微信好友管理与申请通知
 
 好友管理需要 Native `v2.7.1`。在机器人表单开启 `enable_friend_requests` 后，
-AstrBot 管理员可在该微信机器人的私聊中用 AI 按微信号查询、发送好友申请、查看待处理申请或接受指定申请。
+AstrBot 管理员可在该微信机器人的私聊中用 AI 按微信号搜索用户、查询本地通讯录确认好友关系，以及发送、查看或接受好友申请。
 发送和接受需要具有目标账号 `admin` 权限的 `admin_token_file`；搜索、查询和订阅沿用读取凭据。
 
 在已接入的 Telegram、QQ、LINE、`weixin_oc` 或 WeChat Native 管理员私聊中，

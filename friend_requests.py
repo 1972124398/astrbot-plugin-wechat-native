@@ -11,10 +11,11 @@ from astrbot.core.star.star import star_map
 
 from .native_client import NativeAPIError
 from .state import cursor_number
-from .tool_support import ToolError, context, encode, error_result, result
+from .tool_support import ToolError, context, encode, error_result, page_args, result
 
 FRIEND_TOOLS = {
     "wechat_search_contact",
+    "wechat_list_contacts",
     "wechat_send_friend_request",
     "wechat_list_friend_requests",
     "wechat_accept_friend_request",
@@ -23,6 +24,7 @@ _TOOL_LOG_PREFIXES = tuple(
     prefix for name in FRIEND_TOOLS for prefix in (f"使用工具：{name}，", f"Tool `{name}` Result:")
 )
 NOT_FOUND = {"not_found", "contact_request_not_found"}
+CONTACT_RELATIONS = ("friend", "non_contact", "unknown")
 ERROR_MESSAGES = {
     "stale_contact_request": "申请已变化，请重新查询后再操作。",
     "stale_recipient_reference": "搜索引用已失效，请用微信号重新搜索。",
@@ -164,6 +166,54 @@ class FriendRequests:
         else:
             message = "找到微信用户，当前无法发送好友申请。"
         return result("search_contact", "success", message=message, **fields)
+
+    async def list_contacts(self, search, relation, cursor):
+        limit = 12
+        page_args(limit, cursor)
+        if relation not in (*CONTACT_RELATIONS, "all"):
+            raise ToolError("invalid_request")
+        if not isinstance(search, str) or len(search.encode()) > 256:
+            raise ToolError("invalid_request")
+        page = await self.adapter.client.contacts(
+            limit=limit, relation=relation, search=search.strip(), cursor=cursor
+        )
+        rows, next_cursor = page.get("items"), page.get("nextCursor")
+        if not isinstance(rows, list) or len(rows) > limit:
+            raise NativeAPIError(502)
+        if next_cursor is not None and (
+            not isinstance(next_cursor, str) or not next_cursor or len(next_cursor) > 8192
+        ):
+            raise NativeAPIError(502)
+        items = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise NativeAPIError(502)
+            if row.get("deleted") is True:
+                continue
+            username, actual = row.get("username"), row.get("relation")
+            if (
+                row.get("accountId", self.account) != self.account
+                or not _opaque(username)
+                or row.get("id") != username
+                or actual not in CONTACT_RELATIONS
+                or (relation != "all" and actual != relation)
+            ):
+                raise NativeAPIError(502)
+            item = {"username": username, "relation": actual}
+            for key in ("displayName", "alias"):
+                if value := _text(row.get(key), 80):
+                    item[key] = value
+            items.append(item)
+        coverage = page.get("coverage")
+        return result(
+            "list_contacts",
+            "success",
+            items=items,
+            count=len(items),
+            nextCursor=next_cursor,
+            partial=isinstance(coverage, dict) and coverage.get("partial") is True,
+            message="已查询本地联系人。" if items else "本页没有匹配的本地联系人。",
+        )
 
     async def pages(self, search=""):
         cursor, seen = "", set()
@@ -428,6 +478,8 @@ async def run_friend(event, action, **params):
         service = ctx.adapter.friend_requests
         if action == "search_contact":
             output = await service.search(ctx, params["query"])
+        elif action == "list_contacts":
+            output = await service.list_contacts(**params)
         elif action == "list_requests":
             output = await service.list(params["search"])
         else:

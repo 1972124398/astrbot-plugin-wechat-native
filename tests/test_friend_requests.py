@@ -82,6 +82,59 @@ def pending(request_id, **updates):
     }
 
 
+async def test_list_contacts_checks_friendship_from_saved_relationship(serve, tmp_path):
+    adapter, event, _ = await tool_event(serve, tmp_path, enable_friend_requests=True)
+    plugin = object.__new__(module("main").WeChatNativePlugin)
+    queries = []
+
+    async def native(req):
+        assert req.method == "GET" and req.path == "/v1/accounts/a/contacts"
+        assert req.headers["Authorization"] == "Bearer fake"
+        queries.append(dict(req.query))
+        assert req.query["search"] == "alice_wechat"
+        friend = req.query["relation"] == "friend"
+        item = {
+            "id": "wxid_alice",
+            "username": "wxid_alice",
+            "alias": "alice_wechat",
+            "displayName": "Alice",
+            "relation": "friend" if friend else "unknown",
+        }
+        after = req.query.get("cursor")
+        return web.json_response(
+            {
+                "items": [item] if after or not friend else [{"id": "gone", "deleted": True}],
+                "nextCursor": "next" if friend and not after else None,
+                "coverage": {"partial": not friend},
+            }
+        )
+
+    try:
+        adapter.client.api_url = await serve(native) + "/v1"
+        rejected = json.loads(await plugin.wechat_list_contacts(event))
+        assert rejected["status"] == "permission_denied" and not queries
+        event.role = "admin"
+        first = json.loads(await plugin.wechat_list_contacts(event, "alice_wechat"))
+        assert first["items"] == [] and first["nextCursor"] == "next"
+        second = json.loads(
+            await plugin.wechat_list_contacts(event, "alice_wechat", cursor=first["nextCursor"])
+        )
+        assert queries[-1]["cursor"] == "next"
+        assert second["items"] == [
+            {
+                "username": "wxid_alice",
+                "alias": "alice_wechat",
+                "displayName": "Alice",
+                "relation": "friend",
+            }
+        ]
+        all_contacts = json.loads(await plugin.wechat_list_contacts(event, "alice_wechat", "all"))
+        assert all_contacts["items"][0]["relation"] == "unknown"
+        assert all_contacts["partial"] is True
+    finally:
+        await adapter.terminate()
+
+
 async def test_list_followup_page_and_accept_current_version(serve, tmp_path):
     token = tmp_path / "admin-token"
     token.write_text("synthetic-admin")
