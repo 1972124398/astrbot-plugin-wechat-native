@@ -79,6 +79,36 @@ async def test_recent_uses_native_http_and_preserves_checkpoint(serve, tmp_path)
         await adapter.terminate()
 
 
+async def test_history_reads_link_card_text_but_hides_recalled_card(serve, tmp_path):
+    adapter, event, msg = await tool_event(serve, tmp_path, enable_history_tools=True)
+    card = dict(
+        msg,
+        type=49,
+        appMessageType=4,
+        body=None,
+        link={
+            "title": "音乐分享",
+            "sourceName": "音乐平台",
+            "url": "https://example.invalid/music",
+        },
+    )
+
+    async def history(req):
+        assert req.method == "GET" and req.path == "/accounts/a/threads/peer/messages"
+        return web.json_response({"items": [card, dict(card, id="m2", recall={})]})
+
+    adapter.client.api_url = await serve(history)
+    try:
+        plugin = object.__new__(module("main").WeChatNativePlugin)
+        result = json.loads(await plugin.wechat_get_recent_messages(event))
+        assert [item["text"] for item in result["items"]] == [
+            "[链接卡片] 音乐分享\n来源：音乐平台\n链接：https://example.invalid/music",
+            "[已撤回]",
+        ]
+    finally:
+        await adapter.terminate()
+
+
 async def test_foreign_and_tampered_events_cannot_read(serve, tmp_path):
     adapter, event, msg = await tool_event(serve, tmp_path, enable_history_tools=True)
     calls = []

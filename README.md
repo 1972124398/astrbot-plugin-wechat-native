@@ -3,7 +3,7 @@
 让 AstrBot 接入个人微信，在私聊和群聊中使用模型、语音与插件能力。
 插件通过 **agent-wechat-native /v1 API** 连接微信，运行于 AstrBot 内，无需额外 Bridge 服务。
 
-**适配版本：** AstrBot `>=4.29.3,<5` · Native `v2.7.1` · Python `3.12+`
+**适配版本：** AstrBot `>=4.29.3,<5` · Native `v2.9.0`（已绑定的状态库可在 `v2.7.1`–`v2.8.0` 继续接收事件）· Python `3.12+`
 
 [功能概览](#功能概览) · [安装与配置](#安装与配置) · [Docker 部署](#docker-部署同一台-linux-主机) · [常见问题](#常见问题) · [详细用法](docs/features.md)
 
@@ -15,6 +15,8 @@
 
 图片识别需视觉模型；语音识别与合成需分别配置 STT、TTS。支持 AstrBot 文本转图片，普通文件发送暂不支持。
 查看[图片发送](docs/features.md#支持发送图片)、[媒体读取指令](docs/features.md#图片识别)、[语音收发](docs/features.md#微信语音收发)与[引用回复](docs/features.md#消息引用回复)。
+
+可读取文章、音乐和视频分享的[链接卡片](docs/features.md#链接卡片读取)。开启 `enable_media` 时，可用的封面也会交给视觉模型。
 
 [原生表情功能](docs/features.md#原生表情native-v240)支持：
 读取引用表情，以及从已下载的 Saved/已添加官方表情包查找并发送原生表情。
@@ -38,7 +40,7 @@
 扫码后按手机提示确认。任务过期或失败后，点击“重新获取二维码”直接重新扫码，
 跳过旧会话恢复；首次进入面板仍优先尝试已有设备登录。
 已认证但暂时重连的账号不会强制重新扫码。登录需要 Dashboard 管理账号及可读取的
-`admin_token_file`，普通连接检测仍使用 `token_file`，无需新增 Secret。
+`admin_token_file`，普通连接检测仍使用 `token_file`，无需新增 Secret。Native `v2.9.0` 提供登录失败的微信服务和错误码时，管理员面板会显示这两项。
 
 在已经接入 AstrBot 的 Telegram、QQ OneBot、LINE、`weixin_oc` 等平台的**管理员私聊**中操作：
 
@@ -64,7 +66,7 @@ QQ、LINE 等平台可能限制主动消息；首次使用请运行 `/测试通�
 
 ### 微信好友管理与申请通知
 
-好友管理需要 Native `v2.7.1`。在机器人表单开启 `enable_friend_requests` 后，
+好友管理从 Native `v2.7.1` 起可用。在机器人表单开启 `enable_friend_requests` 后，
 AstrBot 管理员可在该微信机器人的私聊中用 AI 按微信号搜索用户、查询本地通讯录确认好友关系，以及发送、查看或接受好友申请。
 发送和接受需要具有目标账号 `admin` 权限的 `admin_token_file`；搜索、查询和订阅沿用读取凭据。
 
@@ -98,6 +100,7 @@ AstrBot 管理员可在该微信机器人的私聊中用 AI 按微信号搜索�
 
 Native Token 需要目标账号的 **read + send + media** 权限。本文 Compose 让两个容器读取同一份 Token 文件。
 模型 API Key 在 AstrBot 的模型设置中配置；更换 Token 文件后重启机器人。
+机器人首次绑定时从当时的最新事件之后开始接收，需要 Native `v2.9.0` 或更高版本。已有状态库会从保存的游标续读。
 
 ### 回复规则
 
@@ -147,7 +150,7 @@ AstrBot 的模型开关、全局白名单和插件权限仍需正确配置。
 | `enable_wechat_actions` | `false` | 开启自身群昵称、群改名及自身消息撤回 |
 | `wechat_action_admins` | `[]` | 可改群名/撤回消息的真实 `senderId`；空列表不授权任何人 |
 | `admin_token_file` | `/run/secrets/wechat-admin-token` | 管理凭据文件，用于面板扫码登录、群昵称与群改名、发送与接受好友申请 |
-| `enable_friend_requests` | `false` | 启用微信好友管理工具与好友申请通知，需要 Native v2.7.1 |
+| `enable_friend_requests` | `false` | 启用微信好友管理工具与好友申请通知，Native v2.7.1 起可用 |
 
 群昵称/群改名需要单独配置 `admin_token_file`，且 Native Token 具有目标账号的 `admin` scope。
 按下方 Docker 示例填写 `/run/secrets/wechat-admin-token`，文件创建、签发及挂载见[管理 Token 步骤](#签发并保存管理-token)。
@@ -264,7 +267,7 @@ services:
         max-file: "3"
 
   agent-wechat:
-    image: ghcr.io/thisnick/agent-wechat-native:v2.7.1
+    image: ghcr.io/thisnick/agent-wechat-native:v2.9.0
     container_name: agent-wechat
     restart: unless-stopped
     network_mode: host
@@ -327,7 +330,7 @@ docker compose exec agent-wechat wx --server-name local accounts list
 ```
 
 记下返回的账号 `id`。如需使用已有官方微信资料，按
-[Native 登录说明](https://github.com/thisnick/agent-wechat/blob/v2.7.1/docs/src/content/docs/setup/connect.mdx)
+[Native 登录说明](https://github.com/thisnick/agent-wechat/blob/v2.9.0/docs/src/content/docs/setup/connect.mdx)
 挂载资料目录；使用期间保持官方客户端关闭。
 
 #### 签发并保存管理 Token
@@ -492,8 +495,8 @@ ruff format --check .
 使用 Python 3.12 虚拟环境；生产安装由 AstrBot 处理 `requirements.txt`，无需安装开发依赖。
 
 - [AstrBot Docker 部署](https://docs.astrbot.app/deploy/astrbot/docker.html)
-- [Native Docker 部署](https://github.com/thisnick/agent-wechat/tree/v2.7.1/deploy/native)
-- [Native v2.7.1 API](https://github.com/thisnick/agent-wechat/blob/v2.7.1/docs/src/content/docs/use/api.mdx)
+- [Native Docker 部署](https://github.com/thisnick/agent-wechat/tree/v2.9.0/deploy/native)
+- [Native v2.9.0 API](https://github.com/thisnick/agent-wechat/blob/v2.9.0/docs/src/content/docs/use/api.mdx)
 
 本插件采用 [MIT 许可证](LICENSE)。仅接入有权操作的微信账号。
 

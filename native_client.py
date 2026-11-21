@@ -1185,7 +1185,7 @@ class NativeClient:
         return await self._load_assets(message_id, "image", quoted=quoted, guard=guard)
 
     async def _load_assets(
-        self, message_id: str, kind: str, *, quoted: bool, guard=None
+        self, message_id: str, kind: str, *, quoted: bool, guard=None, allow_empty: bool = False
     ) -> list[dict]:
         _check_guard(guard)
         media_label = {
@@ -1223,7 +1223,7 @@ class NativeClient:
         logger.debug(
             "WeChat Native %s资产查询完成：message=%s count=%s", media_label, message_id, len(items)
         )
-        allowed_sources = {None, "quote"} if quoted else {None, "message"}
+        allowed_sources = (None, "quote") if quoted else (None, "message")
         matched = []
         for item in items:
             if (
@@ -1256,7 +1256,7 @@ class NativeClient:
             if item.get("state") == "recalled" or item.get("reason") == "message_recalled":
                 raise MediaError("recalled", media_kind=media_kind)
             matched.append(item)
-        if not matched:
+        if not matched and not allow_empty:
             logger.warning(
                 "WeChat Native 未找到匹配的%s资产：message=%s quoted=%s",
                 media_label,
@@ -1460,6 +1460,50 @@ class NativeClient:
             len(data),
         )
         return data
+
+    async def fetch_link_thumbnail(self, message_id: str, *, guard=None) -> bytes | None:
+        max_bytes = 8 * 1024 * 1024  # Native's link-thumbnail limit.
+        assets = await self._load_assets(
+            message_id, "image", quoted=False, guard=guard, allow_empty=True
+        )
+        asset = next((item for item in assets if item.get("variant") == "thumbnail"), None)
+        if asset is None:
+            return None
+        state = asset.get("state")
+        if state != "available":
+            if not isinstance(state, str) or state in _NON_TRANSFERABLE_STATES:
+                return None
+            if any(
+                type(asset.get(field)) is int and asset[field] > max_bytes
+                for field in ("byteLength", "advertisedByteLength")
+            ):
+                return None
+            try:
+                job = await self.transfer_media(message_id, "thumbnail", asset_id=asset["id"])
+            except NativeAPIError as error:
+                raise _map_media_code(error.code, status=error.status) from None
+            await self._poll_media_job(
+                job.get("id"), message_id=message_id, initial=job, asset_id=asset["id"], guard=guard
+            )
+            asset_id = asset["id"]
+            refreshed = await self._load_assets(
+                message_id, "image", quoted=False, guard=guard, allow_empty=True
+            )
+            asset = next(
+                (
+                    item
+                    for item in refreshed
+                    if item["id"] == asset_id
+                    and item.get("variant") == "thumbnail"
+                    and item.get("state") == "available"
+                ),
+                None,
+            )
+        if asset is None:
+            return None
+        return await self._download_validated_asset(
+            asset, max_bytes=max_bytes, quoted=False, guard=guard
+        )
 
     async def fetch_image(
         self,
@@ -2340,6 +2384,31 @@ class NativeClient:
                 raise SendError(
                     "status_unavailable" if poll_failed else state, key, send_id
                 ) from None
+
+    async def latest_event_cursor(self) -> str:
+        try:
+            page = await self._request(
+                "GET", self.prefix + "/events", params={"newest": "true", "limit": "1"}
+            )
+        except NativeAPIError as error:
+            if error.status == 400:
+                raise RuntimeError(
+                    "最新事件查询被拒绝。首次绑定需要 Native v2.9.0 或更高版本。"
+                ) from None
+            raise
+        cursor, items = page.get("nextCursor"), page.get("items")
+        try:
+            cursor_number(cursor)
+            if (
+                not isinstance(items, list)
+                or len(items) > 1
+                or (items and (not isinstance(items[0], dict) or items[0].get("cursor") != cursor))
+                or (not items and cursor != "0")
+            ):
+                raise ValueError
+        except ValueError:
+            raise NativeAPIError(502) from None
+        return cursor
 
     async def events(self, after: str) -> AsyncIterator[dict]:
         cursor_number(after)

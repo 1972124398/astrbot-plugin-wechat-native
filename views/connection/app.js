@@ -30,7 +30,7 @@ function clearQr() {
 
 async function renderLogin(entry, result, botId, revision) {
   if (!currentView(botId, revision) || document.hidden || !entry.allowed) return;
-  entry.state = result.state;
+  entry.result = result;
   entry.error = false;
   entry.terminal = ["expired", "failed", "rejected", "cancelled", "needs_login", "needs_review"].includes(result.state);
   entry.verify = result.state === "succeeded";
@@ -52,6 +52,10 @@ async function renderLogin(entry, result, botId, revision) {
     needs_login: "需要重新登录，请重新获取二维码。",
     needs_review: "登录结果待确认，请检查账号后手动重试。",
   }[result.state] || "登录状态暂不可用，请刷新检查。";
+  if (result.state === "failed" && typeof result.service === "string"
+      && Number.isInteger(result.service_code)) {
+    loginStatus.textContent += ` 微信服务：${result.service} (${result.service_code})`;
+  }
   if (result.state !== "awaiting_scan" || result.qr_available !== true) {
     clearQr();
     return;
@@ -146,7 +150,7 @@ function updateLogin(result, botId, revision) {
       void beginLogin(botId, revision);
     } else if (entry.terminal) {
       if (entry.error) loginFailure(entry, botId, revision);
-      else void renderLogin(entry, {state: entry.state, qr_available: false}, botId, revision);
+      else void renderLogin(entry, entry.result, botId, revision);
     } else if (entry.verify) {
       void renderLogin(entry, {state: "succeeded", qr_available: false}, botId, revision);
     } else if (!entry.terminal && !entry.verify) {

@@ -4,6 +4,7 @@ import time
 import uuid
 from collections import OrderedDict
 
+from .event import link_card_text
 from .tool_support import ToolError, context, encode, error_result, identity, page_args, result
 
 
@@ -151,7 +152,7 @@ class HistoryTools:
             text = (
                 "[已撤回]"
                 if item.get("recall") is not None
-                else (body if item.get("type") in {1, 49} else "[媒体消息]")
+                else link_card_text(item) or (body if item.get("type") in {1, 49} else "[媒体消息]")
             )
             safe.append(
                 {

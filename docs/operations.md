@@ -106,6 +106,9 @@ wechat_action_admins 中的真实 senderId。群回复 all/probability 模式不
 不要只复制主文件而忽略 WAL。
 
 - SSE 订阅 `/events/stream`，以保存的十进制字符串游标通过 `after` 和 `Last-Event-ID` 恢复。
+- 机器人首次绑定时从当时的最新事件之后开始接收，需要 Native v2.9.0 或更高版本。
+  插件读取最新游标，将它和服务端身份一起写入状态库，然后从该游标继续接收。此操作会跳过更早的事件。
+  已绑定服务的状态库始终使用保存的游标。收到 `410 event_cursor_expired` 时停止接收，由管理员核对事件缺口。
 - 每次连接核对 `/v1/status.serverId`，Native 数据目录被重建或同地址更换服务时停止并保留原状态，不能静默沿用旧游标。
 - `message.committed` 后读取 `/messages/{messageId}`，核实账号、聊天和消息标识，再交给 AstrBot。
 - 只接受 `origin == "live"` 且消息时间在当前时间前 **5 分钟内**（允许 60 秒未来时钟误差）的文本。

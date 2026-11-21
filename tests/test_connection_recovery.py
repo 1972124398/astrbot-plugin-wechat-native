@@ -493,6 +493,41 @@ async def test_terminal_login_status_reuses_cached_result_without_diagnostics(
 
 
 @pytest.mark.parametrize(
+    "service,service_code,diagnostic",
+    [
+        ("saved_device_login", -100, {"service": "saved_device_login", "service_code": -100}),
+        ("SENSITIVE", -100, {}),
+        ({"private": "SENSITIVE"}, -100, {}),
+        ("saved_device_login", True, {}),
+        ("saved_device_login", 2**31, {}),
+    ],
+)
+async def test_login_web_exposes_only_safe_service_rejection_after_restart(
+    serve, tmp_path, caplog, service, service_code, diagnostic
+):
+    from test_connection_view import plugin
+
+    bot, state = await login_server(serve, tmp_path)
+    instance, context = plugin([bot])
+    instance.login_sessions.kv = state["kv"]
+    context._config["dashboard"] = {"username": "admin"}
+    assert (await web_login(context, "start", data={"bot_id": "native-1"}, method="POST"))[0] == 200
+    state["operation"] = operation(
+        "failed",
+        result={"service": service, "serviceCode": service_code, "message": "SENSITIVE RESPONSE"},
+    )
+    expected = {"state": "failed", "qr_available": False, **diagnostic}
+    assert await web_login(context, "status", query="bot_id=native-1") == (200, expected)
+
+    restarted, context = plugin([bot])
+    restarted.login_sessions.kv = state["kv"]
+    context._config["dashboard"] = {"username": "admin"}
+    assert await web_login(context, "status", query="bot_id=native-1") == (200, expected)
+    assert state["gets"] == 1
+    assert "SENSITIVE" not in caplog.text and "SENSITIVE" not in repr(state["kv"].data)
+
+
+@pytest.mark.parametrize(
     "stage,status,code,public_status",
     [
         ("start", 403, "insufficient_scope", 403),

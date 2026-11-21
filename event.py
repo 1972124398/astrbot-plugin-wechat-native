@@ -5,7 +5,7 @@ import base64
 import io
 import re
 from datetime import UTC, datetime
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 from astrbot.api.event import AstrMessageEvent, MessageChain
 from astrbot.api.message_components import At, AtAll, Image, Plain, Record, Reply
@@ -84,6 +84,53 @@ def session_target(value: str, account: str) -> str:
     return thread
 
 
+def link_card_text(raw: dict) -> str:
+    link = raw.get("link")
+    if (
+        raw.get("type") != 49
+        or raw.get("appMessageType") not in (3, 4, 5)
+        or raw.get("recall") is not None
+        or not isinstance(link, dict)
+    ):
+        return ""
+
+    def field(name: str, limit: int) -> str:
+        value = link.get(name)
+        return value.strip()[:limit] if isinstance(value, str) else ""
+
+    title = field("title", 16384)
+    description = field("description", 16384)
+    source = field("sourceName", 1024)
+    url = link.get("url")
+    if (
+        isinstance(url, str)
+        and 0 < len(url) <= 8192
+        and not any(c.isspace() or ord(c) < 32 for c in url)
+    ):
+        try:
+            parsed = urlsplit(url)
+            if (
+                parsed.scheme not in ("http", "https")
+                or not parsed.hostname
+                or "@" in parsed.netloc
+            ):
+                url = None
+        except ValueError:
+            url = None
+    else:
+        url = None
+    if not (title or description or url):
+        return ""
+    lines = [f"[链接卡片] {title}" if title else "[链接卡片]"]
+    if source:
+        lines.append(f"来源：{source}")
+    if url:
+        lines.append(f"链接：{url}")
+    if description:
+        lines.append(f"摘要：{description}")
+    return "\n".join(lines)
+
+
 def convert_message(
     raw: dict,
     config,
@@ -105,7 +152,7 @@ def convert_message(
     result.message_id = raw["id"]
     result.sender = MessageMember(user_id=sender, nickname=sender)
     result.group = Group(group_id=thread) if group else None
-    text = raw["body"] if isinstance(raw.get("body"), str) else ""
+    text = link_card_text(raw) or (raw["body"] if isinstance(raw.get("body"), str) else "")
     if voice_bytes is not None and raw.get("type") == 34:
         text = ""  # Native voice metadata is not the user's transcript; AstrBot ASR fills it.
     mentions = raw.get("mentions")

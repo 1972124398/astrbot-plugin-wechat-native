@@ -56,7 +56,7 @@ CONFIG_METADATA = {
     "enable_friend_requests": {
         "type": "bool",
         "description": "启用微信好友管理与好友申请通知",
-        "hint": "需要 Native v2.7.1；发送和接受申请另需管理 Token。",
+        "hint": "Native v2.7.1 起可用。发送和接受申请另需管理 Token。",
     },
     "enable_stickers": {
         "type": "bool",
@@ -134,6 +134,7 @@ CONFIG_METADATA = {
             "支持私聊图片、PDF 与语音，语音使用 AstrBot 配置的 ASR；"
             "群聊可引用媒体并 @机器人提问；或发送后在2分钟内 @机器人，"
             "使用读取附件、读取图片、读取语音、读取文档（PDF）指令。"
+            "开启后也会尝试读取链接卡片的封面。"
         ),
     },
     "allowed_users": {

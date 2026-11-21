@@ -31,6 +31,27 @@ ACTIVE_STATES = {
     "awaiting_scan",
     "awaiting_approval",
 }
+LOGIN_SERVICES = (
+    "heartbeat",
+    "automatic_authentication",
+    "saved_device_login",
+    "qr_login",
+    "login_poll",
+    "account_authentication",
+    "native_envelope",
+    "other",
+)
+
+
+def _login_diagnostic(state, service, code):
+    if (
+        state == "failed"
+        and service in LOGIN_SERVICES
+        and type(code) is int
+        and (-(2**31) <= code < 2**31)
+    ):
+        return {"service": service, "service_code": code}
+    return {}
 
 
 class LoginError(Exception):
@@ -91,16 +112,32 @@ class LoginSessionManager:
 
     @staticmethod
     def _public(value):
-        return {"state": value["state"], "qr_available": False}
+        state = value["state"]
+        return {
+            "state": state,
+            "qr_available": False,
+            **_login_diagnostic(state, value.get("service"), value.get("service_code")),
+        }
 
     async def _fetch(self, client, key, record):
         value = await client.login_status(record["operation_id"])
-        record = {**record, "state": value["state"]}
-        await self.kv.put_kv_data(key, record)
+        return await self._save_operation(key, record, value)
+
+    async def _save_operation(self, key, record, value):
         result = value["result"]
-        available = value["state"] == "awaiting_scan" and result.get("qrAvailable") is True
-        public = {"state": value["state"], "qr_available": available}
-        if available:
+        state = value["state"]
+        diagnostic = _login_diagnostic(state, result.get("service"), result.get("serviceCode"))
+        record = {
+            **record,
+            "operation_id": value["id"],
+            "state": state,
+            "service": diagnostic.get("service"),
+            "service_code": diagnostic.get("service_code"),
+        }
+        await self.kv.put_kv_data(key, record)
+        public = self._public(record)
+        if state == "awaiting_scan" and result.get("qrAvailable") is True:
+            public["qr_available"] = True
             public["qr_generation"] = result["qrGeneration"]
         return record, public
 
@@ -142,15 +179,7 @@ class LoginSessionManager:
                     await self.kv.put_kv_data(key, record)
                     force_qr = record.get("force_qr", False)
                     value = await client.start_login(record["idempotency_key"], force_qr=force_qr)
-                    record = {**record, "operation_id": value["id"], "state": value["state"]}
-                    await self.kv.put_kv_data(key, record)
-                    result = value["result"]
-                    available = (
-                        value["state"] == "awaiting_scan" and result.get("qrAvailable") is True
-                    )
-                    public = {"state": value["state"], "qr_available": available}
-                    if available:
-                        public["qr_generation"] = result["qrGeneration"]
+                    _, public = await self._save_operation(key, record, value)
                     return public
             except LoginError:
                 raise

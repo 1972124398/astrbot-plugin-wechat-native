@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.21 — 2026-11-21
+
+- Update the recommended Native version to v2.9.0. New bindings start after the latest event, and existing bindings resume from their saved cursors.
+- Read article, music and video link cards in live messages and chat history. Attach available thumbnails to live messages when media is enabled.
+- Show validated WeChat service names and error codes for failed logins in the administrator dashboard.
+
 ## 0.3.20 — 2026-11-18
 
 - Add opt-in friend management for Native v2.7.1. AstrBot administrators can search by WeChat ID, send requests, list pending incoming requests and accept a selected request in WeChat Native private chat.

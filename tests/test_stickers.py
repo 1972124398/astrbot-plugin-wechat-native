@@ -557,6 +557,7 @@ async def test_parallel_native_send_calls_share_one_intent(serve, tmp_path):
 
 async def test_adapter_startup_recovers_sticker_jobs_without_new_post(serve, tmp_path):
     native, adapter = await setup(serve, tmp_path)
+    adapter.state.bind_server("native-test")
     row, _ = adapter.stickers.claim(native.raw, "save", CONTENT_ID, {"assetId": "sticker-original"})
     adapter.state.finish_sticker(row["idempotency_key"], "pending", "job1")
 
@@ -704,9 +705,7 @@ async def test_wechat_text_faces_are_preserved_in_quote_component(serve, tmp_pat
         await adapter.terminate()
 
 
-async def test_empty_catalog_reports_native_counts_without_claiming_save_failure(
-    serve, tmp_path
-):
+async def test_empty_catalog_reports_native_counts_without_claiming_save_failure(serve, tmp_path):
     native, adapter, event = await send_event(serve, tmp_path)
     native.saved, native.packs = [], []
     try:

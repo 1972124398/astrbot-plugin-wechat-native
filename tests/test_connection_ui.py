@@ -214,6 +214,26 @@ def test_terminal_login_requires_explicit_retry(page):
     }
 
 
+def test_login_service_rejection_survives_refresh_until_qr_retry(page):
+    open_view(page, [{"id": "native-1"}])
+    page.evaluate("""window.loginStartResult = {
+        state:'failed', qr_available:false, service:'saved_device_login', service_code:-100
+    }""")
+    start_check(page)
+    complete(page, offline_result())
+    expect(page.locator("#login-status")).to_contain_text("saved_device_login (-100)")
+    page.get_by_role("button", name="刷新", exact=True).click()
+    page.wait_for_function("window.pendingChecks.length === 2")
+    complete(page, offline_result(), 1)
+    expect(page.locator("#login-status")).to_contain_text("saved_device_login (-100)")
+    page.evaluate("""window.loginStartResult = {
+        state:'awaiting_scan', qr_available:true, qr_generation:1
+    }""")
+    page.locator("#login-retry").click()
+    expect(page.locator("#login-qr")).to_be_visible()
+    expect(page.locator("#login-status")).to_have_text("请使用手机微信扫码登录。")
+
+
 def test_qr_generation_replaced_and_visibility_resumes_same_operation(page):
     open_view(page, [{"id": "native-1"}])
     start_check(page)

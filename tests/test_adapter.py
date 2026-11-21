@@ -109,6 +109,138 @@ async def make_adapter(
     return adapter, queue, msg, sent
 
 
+@pytest.mark.parametrize("subtype", [3, 4, 5])
+async def test_link_card_text_reaches_astrbot_without_media(serve, tmp_path, subtype):
+    raw = message(
+        type=49,
+        appMessageType=subtype,
+        body=None,
+        link={
+            "title": "示例标题",
+            "description": "卡片摘要",
+            "sourceName": "示例来源",
+            "url": "https://example.invalid/share?a=1&b=2",
+        },
+    )
+    adapter, queue, _, _ = await make_adapter(serve, tmp_path, raw, enable_media=False)
+    try:
+        await adapter.process_native_event(native_event(raw))
+        event = queue.get_nowait()
+        assert event.message_str == (
+            "[链接卡片] 示例标题\n来源：示例来源\n"
+            "链接：https://example.invalid/share?a=1&b=2\n摘要：卡片摘要"
+        )
+    finally:
+        await adapter.terminate()
+
+
+@pytest.mark.parametrize(
+    "thumbnail", ["available", "transfer", "missing", "invalid", "timeout", "recalled"]
+)
+async def test_link_card_delivers_text_with_optional_native_thumbnail(serve, tmp_path, thumbnail):
+    from astrbot.api.message_components import Image
+
+    raw = message(type=49, appMessageType=5, body=None, link={"title": "卡片"})
+    requests = []
+    transfer_requested = False
+    release = asyncio.Event()
+
+    async def handler(req):
+        nonlocal transfer_requested
+        requests.append((req.method, req.path))
+        if req.path.endswith("/messages/m1"):
+            return web.json_response(raw)
+        if req.path.endswith("/messages/m1/media"):
+            if thumbnail == "timeout":
+                await release.wait()
+            if thumbnail == "recalled":
+                return web.json_response({"error": {"code": "message_recalled"}}, status=410)
+            asset = media_asset("asset-1", accountId="a", variant="thumbnail", data=VALID_PNG)
+            asset["state"] = (
+                "pending" if thumbnail == "transfer" and not transfer_requested else "available"
+            )
+            return web.json_response({"items": [] if thumbnail == "missing" else [asset]})
+        if req.path.endswith("/messages/m1/media-transfers"):
+            assert await req.json() == {
+                "messageId": "m1",
+                "quality": "thumbnail",
+                "assetId": "asset-1",
+            }
+            transfer_requested = True
+            return web.json_response(
+                {"id": "job", "accountId": "a", "kind": "download", "state": "queued"},
+                status=202,
+            )
+        if req.path.endswith("/jobs/job"):
+            return web.json_response(
+                {"id": "job", "accountId": "a", "kind": "download", "state": "succeeded"}
+            )
+        if req.path.endswith("/media/asset-1/content"):
+            data = b"x" * len(VALID_PNG) if thumbnail == "invalid" else VALID_PNG
+            return web.Response(body=data, content_type="image/png")
+        return web.Response(status=404)
+
+    queue = asyncio.Queue()
+    adapter = module("adapter").WeChatNativeAdapter(
+        {"id": "native-a", "server_url": await serve(handler), "account_id": "a", "token": "fake"},
+        {},
+        queue,
+        state_dir=tmp_path,
+    )
+    await adapter.client.open()
+    if thumbnail == "timeout":
+        adapter.client.media_timeout = 0.1
+    try:
+        await adapter.process_native_event(native_event(raw))
+        if thumbnail == "recalled":
+            await asyncio.wait_for(asyncio.gather(*adapter._media_tasks), 2)
+            assert adapter.state.message_status("m1") == "recalled"
+            assert queue.empty()
+            assert all(method == "GET" for method, _ in requests)
+            return
+        event = await asyncio.wait_for(queue.get(), 2)
+        assert event.message_str == "[链接卡片] 卡片"
+        images = [
+            component for component in event.message_obj.message if isinstance(component, Image)
+        ]
+        assert len(images) == (1 if thumbnail in {"available", "transfer"} else 0)
+        assert transfer_requested == (thumbnail == "transfer")
+        assert (("GET", "/v1/accounts/a/jobs/job") in requests) == (thumbnail == "transfer")
+        assert requests.count(("GET", "/v1/accounts/a/messages/m1/media")) == (
+            2 if thumbnail == "transfer" else 1
+        )
+        assert all(
+            method == "GET" or path.endswith("/media-transfers") for method, path in requests
+        )
+        assert queue.empty()
+    finally:
+        release.set()
+        await adapter.terminate()
+
+
+@pytest.mark.parametrize(
+    "mode,mentioned,expected",
+    [("mention", False, False), ("mention", True, True), ("all", False, True)],
+)
+async def test_group_link_card_respects_reply_mode(serve, tmp_path, mode, mentioned, expected):
+    raw = message(
+        type=49,
+        appMessageType=5,
+        body="@bot\u2005",
+        threadId="room@chatroom",
+        mentions={"state": "known", "self": mentioned},
+        link={"title": "卡片"},
+    )
+    adapter, queue, _, _ = await make_adapter(
+        serve, tmp_path, raw, enable_media=False, group_reply_mode=mode
+    )
+    try:
+        await adapter.process_native_event(native_event(raw))
+        assert (not queue.empty()) == expected
+    finally:
+        await adapter.terminate()
+
+
 async def test_panel_statistics_count_live_incoming_once(serve, tmp_path):
     from astrbot.api.event import MessageChain
 
@@ -482,6 +614,31 @@ async def test_recall_prevents_queued_reply(serve, tmp_path):
         await adapter.terminate()
 
 
+async def test_replay_hides_recalled_message_before_recall_event(serve, tmp_path):
+    adapter, queue, msg, sent = await make_adapter(
+        serve,
+        tmp_path,
+        message(type=10000, body="[Message recalled]", recall={"replacementText": "已撤回"}),
+    )
+    try:
+        await adapter.process_native_event(native_event(msg))
+        assert queue.empty()
+        assert adapter.state.cursor == "1"
+        await adapter.process_native_event(
+            {
+                "cursor": "2",
+                "kind": "message.recalled",
+                "data": {"messageId": msg["id"], "threadId": msg["threadId"], "serverId": "900"},
+            }
+        )
+        assert queue.empty()
+        assert not sent
+        assert adapter.state.cursor == "2"
+        assert adapter.state.message_status(msg["id"]) == "recalled"
+    finally:
+        await adapter.terminate()
+
+
 async def test_identity_mismatch_keeps_cursor_for_replay(serve, tmp_path):
     adapter, queue, msg, _ = await make_adapter(serve, tmp_path, message(accountId="foreign"))
     try:
@@ -493,21 +650,35 @@ async def test_identity_mismatch_keeps_cursor_for_replay(serve, tmp_path):
         await adapter.terminate()
 
 
-async def test_run_reconnects_from_committed_cursor_and_stops(serve, tmp_path):
+@pytest.mark.parametrize("saved_cursor", [None, "0", "7"])
+async def test_run_reconnects_from_committed_cursor_and_stops(serve, tmp_path, saved_cursor):
     connections = []
+    head_reads = []
     resumed = asyncio.Event()
     release = asyncio.Event()
     msg = message()
+    should_read_head = saved_cursor is None
+    first_cursor = "10001" if should_read_head else saved_cursor or "0"
+    next_cursor = str(int(first_cursor) + 1)
 
     async def handler(req):
         if req.path == "/v1/status":
             return web.json_response({"serverId": "test-native-server"})
+        if req.path == "/v1/accounts/a/events":
+            head_reads.append(dict(req.query))
+            if len(head_reads) == 1:
+                return web.json_response({"items": [], "nextCursor": "10001"})
+            return web.json_response(
+                {"items": [native_event(msg, cursor="10001")], "nextCursor": "10001"}
+            )
         if req.path.endswith("events/stream"):
             connections.append(req.query["after"])
+            assert req.headers["Last-Event-ID"] == req.query["after"]
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(req)
             if len(connections) == 1:
-                await response.write(("data: " + json.dumps(native_event(msg)) + "\n\n").encode())
+                event = native_event(msg, cursor=next_cursor)
+                await response.write(("data: " + json.dumps(event) + "\n\n").encode())
             else:
                 resumed.set()
                 await release.wait()
@@ -520,16 +691,25 @@ async def test_run_reconnects_from_committed_cursor_and_stops(serve, tmp_path):
 
     url = await serve(handler)
     adapter = module("adapter").WeChatNativeAdapter(
-        {"id": "a", "server_url": url, "account_id": "a", "token": "fake"},
+        {
+            "id": "a",
+            "server_url": url,
+            "account_id": "a",
+            "token": "fake",
+        },
         {},
         asyncio.Queue(),
         state_dir=tmp_path,
     )
+    if saved_cursor is not None:
+        adapter.state.bind_server("test-native-server")
+        adapter.state.advance(saved_cursor)
     adapter.reconnect_delay = 0.001
     task = asyncio.create_task(adapter.run())
     try:
         await asyncio.wait_for(resumed.wait(), 3)
-        assert connections == ["0", "1"]
+        assert connections == [first_cursor, next_cursor]
+        assert head_reads == ([{"newest": "true", "limit": "1"}] * 2 if should_read_head else [])
         assert adapter._event_queue.qsize() == 1
         await adapter.terminate()
         await asyncio.wait_for(task, 1)
@@ -542,6 +722,63 @@ async def test_run_reconnects_from_committed_cursor_and_stops(serve, tmp_path):
         await asyncio.gather(task, return_exceptions=True)
 
 
+async def test_initial_cursor_is_not_saved_if_native_server_changes(serve, tmp_path):
+    calls = []
+
+    async def handler(req):
+        calls.append(req.path)
+        if req.path == "/v1/status":
+            return web.json_response({"serverId": f"server-{calls.count(req.path)}"})
+        if req.path == "/v1/accounts/a/events":
+            return web.json_response({"items": [{"cursor": "42"}], "nextCursor": "42"})
+        return web.json_response({"id": "a", "authenticated": True, "connection": "online"})
+
+    adapter = module("adapter").WeChatNativeAdapter(
+        {
+            "id": "a",
+            "server_url": await serve(handler),
+            "account_id": "a",
+            "token": "fake",
+        },
+        {},
+        asyncio.Queue(),
+        state_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(module("state").StateIdentityError, match="identity changed"):
+            await adapter.run()
+        assert adapter.state.server_id is None
+        assert adapter.state.cursor == "0"
+        assert "/v1/accounts/a/events/stream" not in calls
+    finally:
+        await adapter.terminate()
+
+
+async def test_first_binding_reports_native_without_latest_event_support(serve, tmp_path):
+    async def handler(req):
+        if req.path == "/v1/status":
+            return web.json_response({"serverId": "old-native"})
+        if req.path.endswith("/events"):
+            assert req.query["newest"] == "true"
+            return web.Response(status=400)
+        assert req.path == "/v1/accounts/a"
+        return web.json_response({"id": "a"})
+
+    adapter = module("adapter").WeChatNativeAdapter(
+        {"id": "a", "server_url": await serve(handler), "account_id": "a", "token": "fake"},
+        {},
+        asyncio.Queue(),
+        state_dir=tmp_path,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="v2\\.9\\.0"):
+            await asyncio.wait_for(adapter.run(), 1)
+        assert adapter.state.server_id is None
+        assert adapter.state.cursor == "0"
+    finally:
+        await adapter.terminate()
+
+
 def test_plugin_registers_config_in_real_astrbot():
     from astrbot.core.platform.register import platform_cls_map, platform_registry
 
@@ -550,6 +787,8 @@ def test_plugin_registers_config_in_real_astrbot():
     metadata = next(x for x in platform_registry if x.name == "wechat_native")
     assert metadata.adapter_display_name == "WeChat Native"
     assert not metadata.support_streaming_message
+    assert "start_from_latest_event" not in metadata.default_config_tmpl
+    assert "start_from_latest_event" not in metadata.config_metadata
     assert metadata.config_metadata["token_file"]["type"] == "string"
     assert metadata.default_config_tmpl["group_reply_mode"] == "mention"
 
@@ -593,6 +832,8 @@ async def test_startup_retries_and_preserves_framework_instance_identity(serve, 
         nonlocal attempts
         if req.path == "/v1/status":
             return web.json_response({"serverId": "test-native-server"})
+        if req.path == "/v1/accounts/a/events":
+            return web.json_response({"items": [], "nextCursor": "0"})
         if req.path.endswith("events/stream"):
             response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
             await response.prepare(req)

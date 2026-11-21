@@ -496,14 +496,24 @@ class StateStore:
                 "INSERT OR REPLACE INTO cooldowns VALUES (?, ?, ?)", (account, thread, until)
             )
 
-    def bind_server(self, server_id: str):
+    @property
+    def server_id(self) -> str | None:
+        row = self.db.execute("SELECT value FROM settings WHERE key='server_id'").fetchone()
+        return row[0] if row else None
+
+    def bind_server(self, server_id: str, *, initial_cursor: str = "0"):
         if not isinstance(server_id, str) or not server_id:
             raise StateIdentityError("Native server identity unavailable; state retained")
-        row = self.db.execute("SELECT value FROM settings WHERE key='server_id'").fetchone()
-        if row and row[0] != server_id:
-            raise StateIdentityError("Native server identity changed; state retained for review")
         with self.db:
-            self.db.execute("INSERT OR IGNORE INTO settings VALUES ('server_id', ?)", (server_id,))
+            inserted = self.db.execute(
+                "INSERT OR IGNORE INTO settings VALUES ('server_id', ?)", (server_id,)
+            ).rowcount
+            if self.server_id != server_id:
+                raise StateIdentityError(
+                    "Native server identity changed; state retained for review"
+                )
+            if inserted and self.cursor == "0":
+                self._advance(initial_cursor)
 
     @property
     def cursor(self) -> str:

@@ -41,6 +41,7 @@ from .config import (
 from .event import (
     WeChatNativeEvent,
     convert_message,
+    link_card_text,
     message_timestamp,
     serialize_chain,
     session_target,
@@ -61,7 +62,7 @@ from .native_client import (
     load_outgoing_image,
     load_outgoing_voice,
 )
-from .state import StateStore, cursor_number, state_path
+from .state import StateIdentityError, StateStore, cursor_number, state_path
 from .sticker_service import StickerService, quoted_sticker_candidate
 from .summary import GroupSummaryCache, is_summary_command
 from .wechat_actions import WeChatActions
@@ -271,6 +272,8 @@ class WeChatNativeAdapter(Platform):
         )
         body = raw.get("body")
         has_text_body = isinstance(body, str) and bool(body.strip())
+        is_link_card = bool(link_card_text(raw))
+        link_kind = "link_card" if cfg.enable_media else "text"
         if is_direct_image or is_direct_voice:
             if not cfg.enable_media:
                 return ignored("media_disabled")
@@ -282,7 +285,7 @@ class WeChatNativeAdapter(Platform):
         elif is_quote or msg_type == 1:
             if not has_text_body:
                 return ignored("empty_text_body")
-        else:
+        elif not is_link_card:
             return ignored("unsupported_message_type")
         if not self._check_timestamp(raw):
             return ignored("invalid_timestamp")
@@ -302,6 +305,8 @@ class WeChatNativeAdapter(Platform):
                 or is_quoted_sticker
             ):
                 return "media"
+            if is_link_card:
+                return link_kind
             return "text" if has_text_body else ignored("empty_text_body")
         if cfg.group_reply_mode == "disabled":
             return ignored("group_reply_disabled")
@@ -317,7 +322,7 @@ class WeChatNativeAdapter(Platform):
             and mentions.get("state") == "known"
             and mentions.get("self") is True
         )
-        if mentioned and isinstance(body, str):
+        if mentioned and not is_link_card and isinstance(body, str):
             stripped = re.sub(r"^(?:@[^\u2005\r\n]+\u2005[ \t]*)+", "", body)
             if is_summary_command(stripped):
                 return "text"
@@ -332,7 +337,7 @@ class WeChatNativeAdapter(Platform):
         ):
             return "media" if mentioned else ignored("quoted_media_without_mention")
         if cfg.group_reply_mode in {"all", "probability"} or mentioned:
-            return "text"
+            return link_kind if is_link_card else "text"
         return ignored("group_without_mention")
 
     def _eligible(self, raw: dict, origin: str, *, summary: bool = False) -> bool:
@@ -587,12 +592,14 @@ class WeChatNativeAdapter(Platform):
         is_pdf = media_kind == "pdf"
         is_voice = media_kind == "voice"
         is_sticker = media_kind == "sticker"
+        is_link_card = media_kind == "link_card"
         label = {
             "pdf": "PDF",
             "voice": "语音",
             "image": "图片",
             "attachment": "附件",
             "sticker": "表情",
+            "link_card": "链接卡片",
         }[media_kind]
         recent_request = wrapped.get_extra("wechat_native_recent_image_request")
 
@@ -658,8 +665,17 @@ class WeChatNativeAdapter(Platform):
                         raise MediaError("expired")
                 image_bytes = pdf_name = pdf_text = voice_bytes = None
                 try:
-                    async with asyncio.timeout(self.client.media_timeout):
-                        if is_sticker:
+                    timeout = (
+                        min(5, self.client.media_timeout)
+                        if is_link_card
+                        else self.client.media_timeout
+                    )
+                    async with asyncio.timeout(timeout):
+                        if is_link_card:
+                            image_bytes = await self.client.fetch_link_thumbnail(
+                                message_id, guard=guard
+                            )
+                        elif is_sticker:
                             data, _ = await self.stickers.read_quote(raw, guard=guard)
                             image_bytes = await asyncio.to_thread(sticker_preview, data)
                         elif is_voice:
@@ -704,10 +720,16 @@ class WeChatNativeAdapter(Platform):
                             except QuotedMediaMetadataError:
                                 image_bytes = await self._fetch_quote_original(raw, wrapped, guard)
                 except TimeoutError:
-                    raise MediaError("unavailable", media_kind=media_kind) from None
+                    if not is_link_card:
+                        raise MediaError("unavailable", media_kind=media_kind) from None
+                except MediaError as error:
+                    if not is_link_card or error.reason == "recalled":
+                        raise
                 guard()
                 payload_size = (
-                    len(pdf_text) if is_pdf else len(voice_bytes if is_voice else image_bytes)
+                    len(pdf_text)
+                    if is_pdf
+                    else len((voice_bytes if is_voice else image_bytes) or b"")
                 )
                 logger.debug(
                     "WeChat Native %s处理完成：message=%s size=%s", label, message_id, payload_size
@@ -1056,7 +1078,7 @@ class WeChatNativeAdapter(Platform):
                 raise RuntimeError("Native event handoff requires inspection") from None
             self._events[message_id] = wrapped
             logger.debug("WeChat Native 文本已交付 AstrBot：message=%s", message_id)
-        elif fresh and kind == "media":
+        elif fresh and kind in {"media", "link_card"}:
             self.loop_guard.incoming(thread, message_id, converted.message_str)
             wrapped = WeChatNativeEvent(converted, self)
             quote = raw.get("quote")
@@ -1064,7 +1086,9 @@ class WeChatNativeAdapter(Platform):
                 "wechat_native_media_kind",
                 recent_kind
                 or (
-                    "sticker"
+                    "link_card"
+                    if kind == "link_card"
+                    else "sticker"
                     if self.native_config.enable_stickers and quoted_sticker_candidate(raw)
                     else "voice"
                     if raw.get("type") == 34
@@ -1109,7 +1133,20 @@ class WeChatNativeAdapter(Platform):
                     if account.get("id") != self.native_config.account_id:
                         raise ValueError("account_identity_mismatch")
                     status = await self.client.status()
-                    self.state.bind_server(status.get("serverId"))
+                    server_id = status.get("serverId")
+                    initial_cursor = "0"
+                    if (
+                        isinstance(server_id, str)
+                        and server_id
+                        and self.state.server_id is None
+                        and self.state.cursor == "0"
+                    ):
+                        initial_cursor = await self.client.latest_event_cursor()
+                        if (await self.client.status()).get("serverId") != server_id:
+                            raise StateIdentityError(
+                                "Native server identity changed; state retained for review"
+                            )
+                    self.state.bind_server(server_id, initial_cursor=initial_cursor)
                     self.bot_self_id = account.get("ownUsername") or self.native_config.account_id
                     if recovery is None:
                         recovery = asyncio.create_task(self.actions.recover())
