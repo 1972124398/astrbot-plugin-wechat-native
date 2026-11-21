@@ -35,6 +35,7 @@ DEFAULT_CONFIG = {
     "token_file": "/run/secrets/wechat-api-token",
     "enable_private_reply": True,
     "enable_media": True,
+    "image_quality_original": False,
     "enable_stickers": False,
     "allowed_users": [],
     "group_reply_mode": "mention",
@@ -137,6 +138,15 @@ CONFIG_METADATA = {
             "开启后也会尝试读取链接卡片的封面。"
         ),
     },
+    "image_quality_original": {
+        "type": "bool",
+        "description": "图片以原图画质发送",
+        "hint": (
+            "关闭时按标准画质发送，微信端会压缩图片。开启后 JPEG 原样发送，"
+            "PNG、GIF、WebP 转为全分辨率 JPEG，动图会变成静态图；"
+            "原图保留拍摄参数等元数据。"
+        ),
+    },
     "allowed_users": {
         "type": "list",
         "description": "私聊用户白名单",
@@ -204,6 +214,7 @@ class NativeConfig:
     token_file: str = field(repr=False)
     enable_private_reply: bool = True
     enable_media: bool = True
+    image_quality_original: bool = False
     enable_stickers: bool = False
     allowed_users: frozenset[str] = frozenset()
     group_reply_mode: str = "mention"
@@ -249,6 +260,7 @@ class NativeConfig:
         for key in (
             "enable_private_reply",
             "enable_media",
+            "image_quality_original",
             "enable_stickers",
             "enable_group_red_packet_reply",
             "unique_session",
@@ -281,6 +293,7 @@ class NativeConfig:
             token_file=data.get("token_file", ""),
             enable_private_reply=data.get("enable_private_reply", True),
             enable_media=data.get("enable_media", True),
+            image_quality_original=data.get("image_quality_original", False),
             enable_stickers=data.get("enable_stickers", False),
             group_reply_mode=mode,
             group_reply_style=style,

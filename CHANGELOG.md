@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.22 — 2026-11-22
+
+- Add the opt-in `image_quality_original` setting for the robot form. When enabled, image sends carry `imageQuality: "original"` so Native keeps JPEG sources unchanged instead of sending the compressed standard copy.
+- Leave the field out when the setting is off, so existing standard-quality submissions keep their request hash and idempotency behavior.
+
 ## 0.3.21 — 2026-11-21
 
 - Update the recommended Native version to v2.9.0. New bindings start after the latest event, and existing bindings resume from their saved cursors.

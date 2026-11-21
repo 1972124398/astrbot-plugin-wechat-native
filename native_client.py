@@ -2050,6 +2050,7 @@ class NativeClient:
         *,
         record_job: Callable[[str], None],
         before_send: Callable[[], Awaitable[None]],
+        image_quality: str | None = None,
     ) -> dict:
         """Stage bytes, submit one image job, then read that job without resubmitting."""
         suffix = {"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp"}
@@ -2064,6 +2065,7 @@ class NativeClient:
             filename="image." + suffix[content_type],
             record_job=record_job,
             before_send=before_send,
+            image_quality=image_quality,
         )
 
     async def send_voice(
@@ -2115,6 +2117,7 @@ class NativeClient:
         record_job: Callable[[str], None],
         before_send: Callable[[], Awaitable[None]],
         record_chunks=None,
+        image_quality: str | None = None,
     ) -> dict:
         """Share upload, idempotent submission and job polling for images and voice."""
         form = aiohttp.FormData()
@@ -2128,9 +2131,10 @@ class NativeClient:
         ):
             raise SendError("upload_identity_mismatch", key)
         await before_send()
-        value = await self._submit_send(
-            {"threadId": thread, "kind": kind, "sourceId": source["id"]}, key
-        )
+        payload = {"threadId": thread, "kind": kind, "sourceId": source["id"]}
+        if image_quality == "original":
+            payload["imageQuality"] = "original"
+        value = await self._submit_send(payload, key)
         deadline = asyncio.get_running_loop().time() + (
             self.voice_send_timeout if kind == "voice" else self.send_timeout
         )

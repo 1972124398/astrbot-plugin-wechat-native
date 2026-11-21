@@ -1515,6 +1515,9 @@ class WeChatNativeAdapter(Platform):
                                 record_chunks=record_voice_progress,
                             )
                         else:
+                            image_quality = (
+                                "original" if self.native_config.image_quality_original else None
+                            )
                             receipt = await self.client.send_image(
                                 thread,
                                 data,
@@ -1522,6 +1525,7 @@ class WeChatNativeAdapter(Platform):
                                 key,
                                 record_job=lambda job_id: self.state.record_send_id(key, job_id),
                                 before_send=check_current_source,
+                                image_quality=image_quality,
                             )
                     except BaseException as error:
                         state = "needs_review"

@@ -66,6 +66,16 @@ AstrBot 的 `Image` 组件可发送到微信私聊和群聊，也支持通过已
 base64 data URI 或裸 base64 来源；`url` 字段优先于 `file`，与 AstrBot 的接口一致。
 支持 JPEG、PNG、GIF、WebP，**单张上限 10 MiB**；Native 负责后续图片处理，微信端显示效果需实际验证。
 
+默认按 Native 的**标准画质**发送：插件只提交 `kind=image` 和 `sourceId`，不指定画质，
+所以远端生成的标准副本会被压缩。开启 `image_quality_original`（默认关闭）后，
+`/sends` 请求会带上 `imageQuality: "original"`：
+
+* JPEG 源按原字节发送，不受分辨率限制；
+* PNG、GIF、WebP 会在全分辨率下转为 JPEG，**动图因此变成静态图**；
+* 原图保留内嵌元数据，可能包含相机和位置信息。
+
+该开关只影响发送，不改变接收与识别。视频画质不在本开关范围内。
+
 文本和图片按消息链顺序逐段发送，多张图片逐张确认后再发送下一张。例如：
 
 ```python

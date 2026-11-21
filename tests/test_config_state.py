@@ -21,6 +21,9 @@ def test_config_token_file_and_url(tmp_path):
     assert cfg.enable_media is True
     assert config_module.DEFAULT_CONFIG["enable_media"] is True
     assert config_module.CONFIG_METADATA["enable_media"]["type"] == "bool"
+    assert cfg.image_quality_original is False
+    assert config_module.DEFAULT_CONFIG["image_quality_original"] is False
+    assert config_module.CONFIG_METADATA["image_quality_original"]["type"] == "bool"
     assert config_module.MAX_IMAGE_BYTES == 10 * 1024 * 1024
     assert config_module.MEDIA_DOWNLOAD_TIMEOUT == 60
     assert config_module.MAX_CONCURRENT_MEDIA_TASKS == 3
@@ -38,6 +41,7 @@ def test_config_token_file_and_url(tmp_path):
         {"allowed_users": "u1,u2"},
         {"enable_private_reply": "false"},
         {"enable_media": "true"},
+        {"image_quality_original": "true"},
         {"token": "bad\nheader"},
     ],
 )

@@ -16,7 +16,9 @@ from test_adapter import message
 from test_native_client import VALID_JPEG, member_lookup
 
 
-async def image_adapter(serve, tmp_path, *, thread="peer", outcome="accepted", fail_at=1):
+async def image_adapter(
+    serve, tmp_path, *, thread="peer", outcome="accepted", fail_at=1, original=False
+):
     msg = message(threadId=thread)
     requests, uploads, posts = [], [], []
     jobs = {}
@@ -60,7 +62,11 @@ async def image_adapter(serve, tmp_path, *, thread="peer", outcome="accepted", f
             assert key not in [entry[0] for entry in posts]
             posts.append((key, payload))
             if payload.get("kind") == "image":
-                assert set(payload) == {"threadId", "kind", "sourceId"}
+                expected = {"threadId", "kind", "sourceId"}
+                if original:
+                    expected.add("imageQuality")
+                    assert payload["imageQuality"] == "original"
+                assert set(payload) == expected
                 state = outcome if len(uploads) == fail_at else "accepted"
                 if state in {"http400", "http408", "http503", "lost"}:
                     status = {"http400": 400, "http408": 408, "http503": 503, "lost": 503}[state]
@@ -114,7 +120,13 @@ async def image_adapter(serve, tmp_path, *, thread="peer", outcome="accepted", f
 
     url = await serve(handler)
     adapter = module("adapter").WeChatNativeAdapter(
-        {"id": "native-a", "server_url": url, "account_id": "a", "token": "fake"},
+        {
+            "id": "native-a",
+            "server_url": url,
+            "account_id": "a",
+            "token": "fake",
+            "image_quality_original": original,
+        },
         {},
         asyncio.Queue(),
         state_dir=tmp_path,
@@ -165,6 +177,30 @@ async def test_single_image_sources(serve, tmp_path, public_image_url, source):
         assert requests.index(("POST", "/v1/accounts/a/uploads")) < requests.index(
             ("POST", "/v1/accounts/a/sends")
         )
+    finally:
+        await adapter.terminate()
+
+
+async def test_original_image_quality_is_opt_in(serve, tmp_path):
+    adapter, event, _, _, posts, _ = await image_adapter(serve, tmp_path, original=True)
+    try:
+        await event.send(MessageChain([Image.fromBytes(VALID_JPEG)]))
+        assert posts[0][1] == {
+            "threadId": "peer",
+            "kind": "image",
+            "sourceId": "source-1",
+            "imageQuality": "original",
+        }
+        assert adapter.state.message_status("m1") == "replied"
+    finally:
+        await adapter.terminate()
+
+
+async def test_standard_image_quality_omits_the_field(serve, tmp_path):
+    adapter, event, _, _, posts, _ = await image_adapter(serve, tmp_path)
+    try:
+        await event.send(MessageChain([Image.fromBytes(VALID_JPEG)]))
+        assert posts[0][1] == {"threadId": "peer", "kind": "image", "sourceId": "source-1"}
     finally:
         await adapter.terminate()
 
