@@ -8,6 +8,7 @@ PLUGIN_ID = "astrbot_plugin_wechat_native"
 ADAPTER_ID = "wechat_native"
 
 MAX_IMAGE_BYTES = 10 * 1024 * 1024
+STICKER_MAX_EDGE = 1024
 MAX_VOICE_BYTES = 25 * 1024 * 1024 - 17
 MAX_VOICE_SECONDS = 300
 VOICE_SEND_TIMEOUT = 25 * 60
@@ -36,6 +37,7 @@ DEFAULT_CONFIG = {
     "enable_private_reply": True,
     "enable_media": True,
     "image_quality_original": False,
+    "send_gif_as_sticker": True,
     "enable_stickers": False,
     "allowed_users": [],
     "group_reply_mode": "mention",
@@ -147,6 +149,15 @@ CONFIG_METADATA = {
             "原图保留拍摄参数等元数据。"
         ),
     },
+    "send_gif_as_sticker": {
+        "type": "bool",
+        "description": "GIF 以微信表情发送",
+        "hint": (
+            "微信按普通图片收下的 GIF 会变成静态图。开启后 GIF 改为表情发送，"
+            "保留动画；最长边超过 1024 会缩小，产物超过 1 MiB 会被拒绝，"
+            "此时自动回退为普通图片。关闭后 GIF 仍按图片发送。"
+        ),
+    },
     "allowed_users": {
         "type": "list",
         "description": "私聊用户白名单",
@@ -215,6 +226,7 @@ class NativeConfig:
     enable_private_reply: bool = True
     enable_media: bool = True
     image_quality_original: bool = False
+    send_gif_as_sticker: bool = True
     enable_stickers: bool = False
     allowed_users: frozenset[str] = frozenset()
     group_reply_mode: str = "mention"
@@ -261,6 +273,7 @@ class NativeConfig:
             "enable_private_reply",
             "enable_media",
             "image_quality_original",
+            "send_gif_as_sticker",
             "enable_stickers",
             "enable_group_red_packet_reply",
             "unique_session",
@@ -294,6 +307,7 @@ class NativeConfig:
             enable_private_reply=data.get("enable_private_reply", True),
             enable_media=data.get("enable_media", True),
             image_quality_original=data.get("image_quality_original", False),
+            send_gif_as_sticker=data.get("send_gif_as_sticker", True),
             enable_stickers=data.get("enable_stickers", False),
             group_reply_mode=mode,
             group_reply_style=style,

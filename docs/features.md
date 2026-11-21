@@ -76,6 +76,20 @@ base64 data URI 或裸 base64 来源；`url` 字段优先于 `file`，与 AstrBo
 
 该开关只影响发送，不改变接收与识别。视频画质不在本开关范围内。
 
+### GIF 以微信表情发送
+
+微信只把**贴纸通道**发来的内容渲染成表情气泡，普通图片通道的 GIF 会被压缩成静态图。
+开启 `send_gif_as_sticker`（默认开启）时，GIF 改走 Native 的贴纸制备通道：
+
+1. `POST /v1/accounts/{account}/uploads` 上传原始字节，标识为 `image.gif`；
+2. `POST /v1/accounts/{account}/sticker-preparations` 提交 `sourceId` 与 `maxEdge: 1024`，轮询直到
+   `state=available`，确认产物 `original` 的 `contentType` 为 `image/gif`；
+3. `POST /v1/accounts/{account}/sends` 提交 `kind=sticker` 与 `source: {kind: "prepared", preparationId}`。
+
+制备有硬性限制：最长边超过 1024 会被缩小，产物超过 1 MiB 或帧数、时长超限会被拒绝。
+任何一步失败（含制备被拒、任务超时、回执未确认）都回退为普通图片发送，并复用已上传的
+`sourceId`，不会重复上传。关闭本开关后 GIF 按普通图片发送，走上面的画质设置。
+
 文本和图片按消息链顺序逐段发送，多张图片逐张确认后再发送下一张。例如：
 
 ```python

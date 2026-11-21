@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.23 — 2026-11-22
+
+- Send GIF images through the Native sticker channel so WeChat renders them as animated stickers instead of compressing them into a static picture. Preparation requests `maxEdge: 1024` and sends `source: {kind: "prepared"}`.
+- Upload each GIF once and reuse that source for the fallback, so a refused preparation still sends an ordinary image without a second upload.
+- Fall back to an ordinary image send whenever preparation is refused, unsupported, times out or the setting is off. Add the `send_gif_as_sticker` setting, on by default.
+
 ## 0.3.22 — 2026-11-22
 
 - Add the opt-in `image_quality_original` setting for the robot form. When enabled, image sends carry `imageQuality: "original"` so Native keeps JPEG sources unchanged instead of sending the compressed standard copy.
