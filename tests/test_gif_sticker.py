@@ -106,13 +106,12 @@ def test_uneven_delays_cannot_run_past_the_limit():
     assert sum(durations(fitted)) <= 10_000
 
 
-def test_a_single_long_frame_is_kept_but_shortened():
-    # A one-frame GIF cannot be sampled down; its delay has to be shortened.
+def test_a_single_frame_is_not_worth_a_sticker():
+    # Nothing can be sampled down, and a still sticker looks like a still image,
+    # so the source stays with the ordinary image send instead.
     data = sticker_gif(frames=1, size=(64, 64), duration=12000)
     compress = module("gif_compress")
-    fitted = compress.fit_sticker_gif(data, "auto")
-    assert fitted is not None
-    assert durations(fitted) == [10_000]
+    assert compress.fit_sticker_gif(data, "auto") is None
 
 
 def test_more_than_two_hundred_frames_are_sampled_down_only_when_allowed():
@@ -132,6 +131,32 @@ def test_the_gear_is_chosen_from_the_source_shape():
     large = compress._gear((1000, 1000), 30, compress.GEARS)
     assert small == compress.GEARS[0]
     assert large[0] < compress.GEARS[0][0]
+
+
+def test_every_gear_palette_has_a_budget():
+    # A missing entry surfaces as a KeyError inside the encoder, which the
+    # caller can only see as "compression failed" for every source at that gear.
+    compress = module("gif_compress")
+    palettes = {colours for _, colours in compress.GEARS + compress.CONSERVATIVE_GEARS}
+    assert palettes <= set(compress.BUDGET)
+
+
+def test_a_busy_gif_drops_frames_instead_of_failing():
+    # 199 frames of 900 px each stay under the frame cap, so nothing else would
+    # bring this source under 1 MiB.
+    compress = module("gif_compress")
+    size, durations_ms = (900, 900), [40] * 199
+    stride = compress._fitted_stride(size, durations_ms, 1, compress.GEARS)
+    assert stride is not None and stride > 1
+
+
+def test_a_single_oversized_frame_is_not_turned_into_a_sticker():
+    # Dropping frames is the only lever left, and dropping down to one frame
+    # would send a still picture through the sticker channel.
+    data = sticker_gif(frames=1, size=(1400, 1400))
+    assert len(data) > MAX_BYTES
+    compress = module("gif_compress")
+    assert compress.fit_sticker_gif(data, "auto") is None
 
 
 def test_an_unreadable_source_is_left_alone():

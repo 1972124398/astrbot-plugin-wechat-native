@@ -59,7 +59,9 @@ CONSERVATIVE_GEARS = (
 )
 
 # Upper bound on output bytes per (scaled pixel x kept frame), by palette size.
-BUDGET = {256: 0.25, 128: 0.30, 64: 0.36}
+# Fewer colours cost more per pixel, because each frame header stays the same
+# size while the frame body shrinks, so the bound rises with the palette.
+BUDGET = {256: 0.25, 128: 0.30, 64: 0.36, 32: 0.40, 16: 0.46}
 
 
 def fit_sticker_gif(
@@ -84,10 +86,16 @@ def fit_sticker_gif(
     stride = _stride(len(durations), mode)
     if stride is None:
         return None
+    gears = GEARS if mode == "auto" else CONSERVATIVE_GEARS
+    if mode == "auto":
+        # A short but very busy GIF can exceed 1 MiB at every edge length while
+        # staying under the frame cap; dropping frames is then the only lever.
+        stride = _fitted_stride(size, durations, stride, gears)
+        if stride is None:
+            return None
     timeline = _timeline(durations, stride)
     if timeline is None:
         return None
-    gears = GEARS if mode == "auto" else CONSERVATIVE_GEARS
     deadline = time.monotonic() + timeout
     gear = _gear(size, len(timeline), gears)
     output = _attempt(data, size, stride, timeline, gear, deadline)
@@ -117,6 +125,28 @@ def _stride(frames: int, mode: str) -> int | None:
         # dropping some is left alone for the caller's ordinary image send.
         return None
     return math.ceil(frames / MAX_STICKER_FRAMES)
+
+
+def _fitted_stride(size, durations, stride: int, gears) -> int | None:
+    """Raise the stride until the smallest gear is predicted to fit, or None.
+
+    Judging a gear needs the kept frames, and dropping frames is what changes
+    them, so the search here is over the stride rather than over the gears.
+    """
+    edge, colours = gears[-1]
+    target = _target_size(size, edge)
+    per_frame = target[0] * target[1]
+    for candidate in range(stride, len(durations) + 1):
+        kept = len(durations) // candidate + (1 if len(durations) % candidate else 0)
+        if kept < 2:
+            return None  # A single frame is a picture, not an animation.
+        if kept * MIN_FRAME_MS > MAX_STICKER_DURATION_MS:
+            continue
+        if per_frame * kept > MAX_ENCODE_PIXELS:
+            continue
+        if per_frame * kept * BUDGET[colours] <= MAX_STICKER_BYTES:
+            return candidate
+    return None
 
 
 def _timeline(durations: list[int], stride: int) -> list[int] | None:

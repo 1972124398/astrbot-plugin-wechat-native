@@ -3,6 +3,7 @@
 ## 0.3.25 — 2026-11-22
 
 - Choose the GIF sticker gear from the source's own shape instead of trial-encoding every ladder step: a measured bytes-per-pixel budget per palette size predicts the output and the first gear that fits is encoded once, with a single cheapest fallback. Auto now uses five gears, conservative seven.
+- Drop frames in auto mode when even the smallest gear is predicted to exceed 1 MiB, and give the two smallest palettes their own budget: without them conservative mode refused every GIF that needed them.
 - Fix a timeline bug that let compressed GIFs stay above the 10 s sticker limit when delays were uneven. Kept frames now absorb the delays of the frames they replace, and the whole timeline is scaled into 10 s, so a long animation plays slightly faster instead of losing its ending.
 - Bound peak memory while compressing: frames are scaled before they are held, and the total pixel budget is capped, so a large GIF can no longer exhaust the container.
 - Retry transient preparation reads instead of discarding a preparation that was already submitted.
