@@ -71,8 +71,8 @@ base64 data URI 或裸 base64 来源；`url` 字段优先于 `file`，与 AstrBo
 `/sends` 请求会带上 `imageQuality: "original"`：
 
 * JPEG 源按原字节发送，不受分辨率限制；
-* PNG、GIF、WebP 会在全分辨率下转为 JPEG，**动图因此变成静态图**；
-* 原图保留内嵌元数据，可能包含相机和位置信息。
+* PNG、GIF、WebP 会在全分辨率下转为 JPEG，所以这个开关不能用来发动画（GIF 见下面的表情通道）；
+* JPEG 原样发送时保留内嵌元数据，可能包含相机与位置信息。
 
 该开关只影响发送，不改变接收与识别。视频画质不在本开关范围内。
 
@@ -82,21 +82,28 @@ base64 data URI 或裸 base64 来源；`url` 字段优先于 `file`，与 AstrBo
 开启 `send_gif_as_sticker`（默认开启）时，GIF 改走 Native 的贴纸制备通道：
 
 制备有硬性限制：最长边 1024、产物 1 MiB、200 帧、10 秒。聊天里的动图通常远超 1 MiB，
-原样提交会被拒绝，所以 `gif_sticker_compression`（默认 `auto`）会先在本地把 GIF 压到限制内：
+原样提交会被拒绝，所以 `gif_sticker_compression`（默认 `auto`）会先在本地把 GIF 压到限制内。
+档位不是逐档试出来的：插件按源图的尺寸、帧数与时长，用实测的「每像素字节数」上限预测
+每个候选档位的产物大小，直接选中第一个满足 1 MiB 的档位编码一次；只有在预测落空时才补一次
+最小档位，不会沿档位阶梯反复重编码。
 
-* `auto`：依次尝试缩小最长边、隔帧抽样、减少调色板颜色，优先保住动画；
-* `conservative`：只缩小和减少颜色，不抽帧，动作更完整但可能仍然超限；
+* `auto`：五档 1024/512/320/240/160，可缩小画面、隔帧抽样与减色，优先保住动画；
+* `conservative`：七档，只缩小画面和减少颜色，不抽帧、不改节奏，更完整但可能仍然超限；
 * `none`：不压缩，只有本来就满足限制的 GIF 能变成表情。
 
-压缩在独立线程执行（最长 30 秒）并只重编码超限的 GIF；本来满足限制的 GIF 原字节直传，
-Native 制备时不会重新编码。压缩或制备失败都不影响这条消息：插件回退为普通图片发送。
+时长不是简单隔帧抽样：每帧的延迟可以不同，插件让每张保留帧吸收被跳过帧的延迟，再整体按比例
+缩放到 10 秒以内，所以长动图会略微加快播放而不是丢掉结尾；透明背景会合成到白底。
+
+压缩在独立线程执行（最长 30 秒，峰值内存受单帧 16 Mi 像素的总量预算约束），并且只重编码超限的
+GIF；本来满足限制的 GIF 原字节直传，Native 制备时不会重新编码。压缩或制备失败都不影响这条消息：
+插件回退为普通图片发送。
 
 发送顺序：
 
 1. `POST /v1/accounts/{account}/uploads` 上传（压缩后的）字节，标识为 `image.gif`；
 2. `POST /v1/accounts/{account}/sticker-preparations` 提交 `sourceId` 与 `maxEdge: 1024`，轮询直到
-   `state=available`，确认产物 `original` 的 `contentType` 为 `image/gif`；此时源已不超过 1024，
-   制备不会缩边，产物与上传字节一致；
+   `state=available`，确认产物 `original` 的 `contentType` 为 `image/gif`；上传的字节已不超过 1024，
+   制备既不会缩边也不会重编码，产物与上传字节一致；轮询只重试读请求，已提交的制备不会被丢弃；
 3. `POST /v1/accounts/{account}/sends` 提交 `kind=sticker` 与 `source: {kind: "prepared", preparationId}`。
 
 任何一步失败（含制备被拒、任务超时、回执未确认）都回退为普通图片发送，并复用已上传的

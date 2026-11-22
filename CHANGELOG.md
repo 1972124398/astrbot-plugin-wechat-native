@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.25 — 2026-11-22
+
+- Choose the GIF sticker gear from the source's own shape instead of trial-encoding every ladder step: a measured bytes-per-pixel budget per palette size predicts the output and the first gear that fits is encoded once, with a single cheapest fallback. Auto now uses five gears, conservative seven.
+- Fix a timeline bug that let compressed GIFs stay above the 10 s sticker limit when delays were uneven. Kept frames now absorb the delays of the frames they replace, and the whole timeline is scaled into 10 s, so a long animation plays slightly faster instead of losing its ending.
+- Bound peak memory while compressing: frames are scaled before they are held, and the total pixel budget is capped, so a large GIF can no longer exhaust the container.
+- Retry transient preparation reads instead of discarding a preparation that was already submitted.
+- Send the staged bytes when a compressed GIF falls back to an ordinary image, so the payload and the source identity describe the same media.
+- Mention in the form hint that compression composites transparency onto white.
+
 ## 0.3.24 — 2026-11-22
 
 - Fit oversized GIFs into the sticker limits before preparing them, so chat GIFs above 1 MiB still become animated stickers instead of falling back to a static image. A GIF that already fits is uploaded unchanged and Native keeps its exact bytes.

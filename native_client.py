@@ -2175,12 +2175,19 @@ class NativeClient:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0 or state not in {"queued", "running"}:
                     return None
-                async with asyncio.timeout(remaining):
-                    await asyncio.sleep(min(self.poll_interval, remaining))
-                    value = await self._request(
-                        "GET",
-                        self.prefix + "/sticker-preparations/" + quote(value["id"], safe=""),
-                    )
+                try:
+                    async with asyncio.timeout(remaining):
+                        await asyncio.sleep(min(self.poll_interval, remaining))
+                        value = await self._request(
+                            "GET",
+                            self.prefix + "/sticker-preparations/" + quote(value["id"], safe=""),
+                        )
+                except NativeAPIError as error:
+                    if error.status in {0, 408, 429} or 500 <= error.status < 600:
+                        continue  # Retry this read; the preparation is already submitted.
+                    raise
+                except TimeoutError:
+                    return None
         except (NativeAPIError, TimeoutError):
             logger.warning("WeChat Native 表情制备失败，改用图片发送")
             return None

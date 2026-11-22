@@ -1583,17 +1583,18 @@ class WeChatNativeAdapter(Platform):
         """Send one image part, as a prepared WeChat sticker when that is enabled.
 
         A GIF sent as an ordinary image is delivered as a still picture, so it is
-        prepared as a sticker first. Preparation restricts the edge length and the
-        output size, so any rejection, timeout or unsupported source falls back to
-        the ordinary image send instead of failing the message.
+        prepared as a sticker first. Preparation restricts the edge length, the
+        output size, the frame count and the timeline, so any rejection, timeout
+        or unsupported source falls back to the ordinary image send instead of
+        failing the message.
         """
+        payload = data
         source = None
         if self.native_config.send_gif_as_sticker and content_type == "image/gif":
-            payload = data
             if self.native_config.gif_sticker_compression != "none":
-                # An oversized GIF is re-encoded here, because Native refuses any
-                # prepared sticker above 1 MiB. Decoding every frame takes seconds,
-                # so it runs off the event loop; a failed fit keeps the source bytes.
+                # Native refuses any prepared sticker above 1 MiB, and most GIFs
+                # are far above that. Decoding every frame takes seconds, so it
+                # runs off the event loop; a failed fit keeps the source bytes.
                 payload = (
                     await asyncio.to_thread(
                         fit_sticker_gif, data, self.native_config.gif_sticker_compression
@@ -1614,7 +1615,9 @@ class WeChatNativeAdapter(Platform):
         image_quality = "original" if self.native_config.image_quality_original else None
         return await self.client.send_image(
             thread,
-            data,
+            # Send the bytes that were staged, so the payload and the source
+            # identity cannot describe different media.
+            payload if source is not None else data,
             content_type,
             key,
             record_job=lambda job_id: self.state.record_send_id(key, job_id),
