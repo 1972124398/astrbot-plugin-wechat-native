@@ -81,14 +81,26 @@ base64 data URI 或裸 base64 来源；`url` 字段优先于 `file`，与 AstrBo
 微信只把**贴纸通道**发来的内容渲染成表情气泡，普通图片通道的 GIF 会被压缩成静态图。
 开启 `send_gif_as_sticker`（默认开启）时，GIF 改走 Native 的贴纸制备通道：
 
-1. `POST /v1/accounts/{account}/uploads` 上传原始字节，标识为 `image.gif`；
+制备有硬性限制：最长边 1024、产物 1 MiB、200 帧、10 秒。聊天里的动图通常远超 1 MiB，
+原样提交会被拒绝，所以 `gif_sticker_compression`（默认 `auto`）会先在本地把 GIF 压到限制内：
+
+* `auto`：依次尝试缩小最长边、隔帧抽样、减少调色板颜色，优先保住动画；
+* `conservative`：只缩小和减少颜色，不抽帧，动作更完整但可能仍然超限；
+* `none`：不压缩，只有本来就满足限制的 GIF 能变成表情。
+
+压缩在独立线程执行（最长 30 秒）并只重编码超限的 GIF；本来满足限制的 GIF 原字节直传，
+Native 制备时不会重新编码。压缩或制备失败都不影响这条消息：插件回退为普通图片发送。
+
+发送顺序：
+
+1. `POST /v1/accounts/{account}/uploads` 上传（压缩后的）字节，标识为 `image.gif`；
 2. `POST /v1/accounts/{account}/sticker-preparations` 提交 `sourceId` 与 `maxEdge: 1024`，轮询直到
-   `state=available`，确认产物 `original` 的 `contentType` 为 `image/gif`；
+   `state=available`，确认产物 `original` 的 `contentType` 为 `image/gif`；此时源已不超过 1024，
+   制备不会缩边，产物与上传字节一致；
 3. `POST /v1/accounts/{account}/sends` 提交 `kind=sticker` 与 `source: {kind: "prepared", preparationId}`。
 
-制备有硬性限制：最长边超过 1024 会被缩小，产物超过 1 MiB 或帧数、时长超限会被拒绝。
 任何一步失败（含制备被拒、任务超时、回执未确认）都回退为普通图片发送，并复用已上传的
-`sourceId`，不会重复上传。关闭本开关后 GIF 按普通图片发送，走上面的画质设置。
+`sourceId`，不会重复上传。关闭 `send_gif_as_sticker` 后 GIF 按普通图片发送，走上面的画质设置。
 
 文本和图片按消息链顺序逐段发送，多张图片逐张确认后再发送下一张。例如：
 

@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.24 — 2026-11-22
+
+- Fit oversized GIFs into the sticker limits before preparing them, so chat GIFs above 1 MiB still become animated stickers instead of falling back to a static image. A GIF that already fits is uploaded unchanged and Native keeps its exact bytes.
+- Add the `gif_sticker_compression` setting: `auto` shrinks, samples frames and reduces colours; `conservative` only shrinks and reduces colours; `none` leaves the bytes alone. Compression runs off the event loop with a 30 s budget and never fails the send.
+- Drop the still-picture and metadata side effects from the `image_quality_original` form hint; they are documented as code comments instead.
+
 ## 0.3.23 — 2026-11-22
 
 - Send GIF images through the Native sticker channel so WeChat renders them as animated stickers instead of compressing them into a static picture. Preparation requests `maxEdge: 1024` and sends `source: {kind: "prepared"}`.

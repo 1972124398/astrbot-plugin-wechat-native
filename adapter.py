@@ -48,6 +48,7 @@ from .event import (
     sticker_preview,
 )
 from .friend_requests import FriendRequests
+from .gif_compress import fit_sticker_gif
 from .history_tools import HistoryTools
 from .loop_guard import LoopGuard
 from .native_client import (
@@ -1588,7 +1589,18 @@ class WeChatNativeAdapter(Platform):
         """
         source = None
         if self.native_config.send_gif_as_sticker and content_type == "image/gif":
-            source = await self.client.stage_image(data, content_type, key + "-sticker")
+            payload = data
+            if self.native_config.gif_sticker_compression != "none":
+                # An oversized GIF is re-encoded here, because Native refuses any
+                # prepared sticker above 1 MiB. Decoding every frame takes seconds,
+                # so it runs off the event loop; a failed fit keeps the source bytes.
+                payload = (
+                    await asyncio.to_thread(
+                        fit_sticker_gif, data, self.native_config.gif_sticker_compression
+                    )
+                    or data
+                )
+            source = await self.client.stage_image(payload, content_type, key + "-sticker")
             if source is not None:
                 prepared = await self.client.prepare_sticker(source["id"], key + "-sticker")
                 if prepared is not None:

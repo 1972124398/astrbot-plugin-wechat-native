@@ -13,6 +13,7 @@ from astrbot.api.event import MessageChain
 from astrbot.api.message_components import At, Image, Plain, Reply
 from conftest import module
 from test_adapter import message
+from test_gif_sticker import oversized_gif
 from test_native_client import VALID_GIF, VALID_JPEG, member_lookup
 
 
@@ -181,7 +182,9 @@ async def test_single_image_sources(serve, tmp_path, public_image_url, source):
         await adapter.terminate()
 
 
-async def gif_adapter(serve, tmp_path, *, prepare_state="available", sticker=True):
+async def gif_adapter(
+    serve, tmp_path, *, prepare_state="available", sticker=True, compression="none"
+):
     """Serve uploads, one sticker preparation job and one sticker send."""
     msg = message()
     posts, uploads, preparations = [], [], []
@@ -278,6 +281,7 @@ async def gif_adapter(serve, tmp_path, *, prepare_state="available", sticker=Tru
             "account_id": "a",
             "token": "fake",
             "send_gif_as_sticker": sticker,
+            "gif_sticker_compression": compression,
         },
         {},
         asyncio.Queue(),
@@ -317,6 +321,33 @@ async def test_gif_falls_back_to_an_image_when_preparation_fails(serve, tmp_path
         assert preparations
         assert posts[0][1]["kind"] == "image"
         assert posts[0][1]["sourceId"] == "source-1"
+    finally:
+        await adapter.terminate()
+
+
+async def test_oversized_gif_is_compressed_before_preparation(serve, tmp_path):
+    source = oversized_gif()
+    assert len(source) > 1024 * 1024
+    adapter, event, posts, uploads, preparations = await gif_adapter(
+        serve, tmp_path, compression="auto"
+    )
+    try:
+        await event.send(MessageChain([Image.fromBytes(source)]))
+        assert uploads[0][0] == "image.gif"
+        assert len(uploads[0][2]) <= 1024 * 1024
+        assert uploads[0][2] != source
+        assert preparations[0][1] == {"sourceId": "source-1", "maxEdge": 1024}
+        assert posts[0][1]["kind"] == "sticker"
+    finally:
+        await adapter.terminate()
+
+
+async def test_gif_compression_can_be_disabled(serve, tmp_path):
+    source = oversized_gif()
+    adapter, event, _, uploads, _ = await gif_adapter(serve, tmp_path, compression="none")
+    try:
+        await event.send(MessageChain([Image.fromBytes(source)]))
+        assert uploads[0][2] == source
     finally:
         await adapter.terminate()
 
