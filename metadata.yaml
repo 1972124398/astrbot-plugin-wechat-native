@@ -14,7 +14,7 @@ desc: |
 version: 0.3.25
 author: neozhu
 category: utilities
-repo: https://github.com/neozhu/astrbot-plugin-wechat-native
+repo: https://github.com/1972124398/astrbot-plugin-wechat-native
 astrbot_version: ">=4.29.3,<5"
 social_link: https://github.com/neozhu
 support_platforms:
