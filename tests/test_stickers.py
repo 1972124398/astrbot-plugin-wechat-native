@@ -615,7 +615,7 @@ async def test_delayed_send_acceptance_still_counts_toward_loop_limit(serve, tmp
     try:
         selection = (await find(event))["items"][0]["selection_id"]
         assert (await send_sticker(event, selection))["status"] == "needs_review"
-        for i in range(7):
+        for i in range(module("loop_guard").MAX_RESPONSES - 1):
             adapter.loop_guard.outgoing("peer", f"previous-{i}", "")
         assert not adapter.loop_guard.blocked("peer")
         native.job_state = "available"
