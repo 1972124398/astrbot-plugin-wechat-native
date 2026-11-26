@@ -17,10 +17,10 @@ async def test_hard_limit_silences_pending_replies_and_persists(serve, tmp_path)
     try:
         # Different response contents must still hit the hard cap.
         results = await asyncio.gather(
-            *[adapter.send_chain("peer", MessageChain([Plain(str(i))])) for i in range(12)]
+            *[adapter.send_chain("peer", MessageChain([Plain(str(i))])) for i in range(64)]
         )
-        assert sum(results) == 8
-        assert len(sent) == 8
+        assert sum(results) == 60
+        assert len(sent) == 60
         await adapter.process_native_event(native_event(msg))
         assert queue.empty()
         assert adapter.state.cursor == "1"
@@ -42,11 +42,13 @@ async def test_cooldown_expiry_and_replay_do_not_count(tmp_path):
     state = module("state").StateStore(tmp_path / "state.sqlite3")
     guard = module("loop_guard").LoopGuard(state, "a", clock=lambda: clock[0])
     try:
-        for i in range(8):
+        for i in range(60):
             guard.outgoing("peer", str(i), "reply")
             guard.outgoing("peer", str(i), "reply")
         assert guard.blocked("peer")
-        clock[0] += 601
+        clock[0] += 29.999
+        assert guard.blocked("peer")
+        clock[0] += 0.001
         assert not guard.blocked("peer")
         assert not module("loop_guard").LoopGuard(state, "b").blocked("peer")
     finally:
@@ -58,10 +60,10 @@ async def test_queued_event_cannot_reply_after_trip(serve, tmp_path):
     try:
         await adapter.process_native_event(native_event(msg))
         event = queue.get_nowait()
-        for i in range(8):
+        for i in range(60):
             await adapter.send_chain("peer", MessageChain([Plain(str(i))]))
         await event.send(MessageChain([Plain("late generated answer")]))
-        assert len(sent) == 8
+        assert len(sent) == 60
         assert event.is_stopped()
         assert adapter.state.message_status(msg["id"]) == "no_reply"
         # Recall events still advance their cursor during cooldown.
@@ -150,3 +152,19 @@ async def test_muted_event_does_not_overwrite_an_existing_failure(serve, tmp_pat
         assert not sent
     finally:
         await adapter.terminate()
+
+
+async def test_high_frequency_replies_and_window_expiry(tmp_path):
+    clock = [1000.0]
+    state = module("state").StateStore(tmp_path / "high-frequency.sqlite3")
+    guard = module("loop_guard").LoopGuard(state, "a", clock=lambda: clock[0])
+    try:
+        for i in range(59):
+            guard.outgoing("peer", str(i), f"reply-{i}")
+        assert not guard.blocked("peer")
+        clock[0] += 60
+        guard.outgoing("peer", "new-window", "new reply")
+        assert not guard.blocked("peer")
+        assert len(guard.traces["peer"].responses) == 1
+    finally:
+        state.close()

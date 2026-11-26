@@ -10,14 +10,15 @@ from dataclasses import dataclass, field
 from astrbot.api import logger
 
 WINDOW = 60
-COOLDOWN = 600
+COOLDOWN = 30
+MAX_RESPONSES = 60
 MAX_THREADS = 1024
 
 
 @dataclass
 class Trace:
     events: deque = field(default_factory=lambda: deque(maxlen=64))
-    responses: deque = field(default_factory=lambda: deque(maxlen=8))
+    responses: deque = field(default_factory=lambda: deque(maxlen=MAX_RESPONSES))
 
 
 def fingerprint(text):
@@ -82,7 +83,7 @@ class LoopGuard:
             return
         trace.responses.append((self.clock(), message_id))
         trace.events.append((self.clock(), "out", message_id, fingerprint(text), trigger))
-        if len(trace.responses) >= 8:
+        if len(trace.responses) >= MAX_RESPONSES:
             self.trip(thread, "hard_limit")
             return
         rounds = list(trace.events)[-6:]
